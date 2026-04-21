@@ -5,6 +5,7 @@ Run:
   python3 -m uvicorn pi_camera_server:app --host 0.0.0.0 --port 9000
 
 Endpoints:
+  GET /
   GET /api/health
   GET /api/camera/frame
   GET /api/camera/stream
@@ -23,7 +24,7 @@ import time
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
 try:
     import cv2
@@ -283,6 +284,116 @@ def _shutdown() -> None:
         except Exception:
             pass
     _release_ir_camera()
+
+
+_INDEX_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PeekIR — Camera</title>
+  <style>
+    :root {
+      --bg: #0f1114;
+      --panel: #1a1d23;
+      --border: #2a2f38;
+      --text: #e6e9ef;
+      --muted: #8b95a5;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: system-ui, Segoe UI, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+    header h1 { font-size: 1rem; font-weight: 600; margin: 0; }
+    header a { color: var(--muted); font-size: 0.875rem; text-decoration: none; }
+    header a:hover { color: var(--text); }
+    .panels {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      background: var(--border);
+      min-height: calc(100vh - 49px);
+    }
+    @media (max-width: 800px) {
+      .panels { grid-template-columns: 1fr; min-height: auto; }
+    }
+    .panel {
+      background: var(--panel);
+      display: flex;
+      flex-direction: column;
+      min-height: 280px;
+    }
+    .panel h2 {
+      margin: 0;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .feed {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.5rem;
+      min-height: 0;
+    }
+    .feed img {
+      max-width: 100%;
+      max-height: calc(100vh - 120px);
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      vertical-align: middle;
+      background: #000;
+    }
+    @media (max-width: 800px) {
+      .feed img { max-height: 45vh; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Live feeds</h1>
+    <a href="/api/health">Health</a>
+  </header>
+  <div class="panels">
+    <section class="panel" aria-label="RGB camera">
+      <h2>RGB</h2>
+      <div class="feed">
+        <img src="/api/camera/stream" alt="RGB camera stream" width="640" height="480">
+      </div>
+    </section>
+    <section class="panel" aria-label="IR camera">
+      <h2>IR</h2>
+      <div class="feed">
+        <img src="/api/ir/stream" alt="IR camera stream" width="160" height="120">
+      </div>
+    </section>
+  </div>
+</body>
+</html>
+"""
+
+
+@app.get("/", response_class=HTMLResponse)
+def index() -> str:
+    return _INDEX_HTML
 
 
 @app.get("/api/health")
