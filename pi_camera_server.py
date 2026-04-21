@@ -2,7 +2,9 @@
 Pi Camera Service (FastAPI)
 
 Run:
-  python3 -m uvicorn pi_camera_server:app --host 0.0.0.0 --port 9000
+  python3 pi_camera_server.py
+
+  Or: python3 -m uvicorn pi_camera_server:app --host 0.0.0.0 --port 9000
 
 Endpoints:
   GET /
@@ -70,13 +72,13 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-# Settings. Set this on the Pi to the IR camera's V4L2 device:
-#   IR_CAMERA_DEVICE=/dev/video2 python -m uvicorn pi_camera_server:app --host 0.0.0.0 --port 9000
+# Settings. IR uses V4L2 (OpenCV). Default device is /dev/video0; override with IR_CAMERA_DEVICE.
+# Disable IR capture: IR_CAMERA_DEVICE= python3 pi_camera_server.py
 FPS = _env_float("RGB_FPS", 15.0)
 JPEG_QUALITY = _env_int("JPEG_QUALITY", 80)
 FRAME_WIDTH = _env_int("RGB_FRAME_WIDTH", 640)
 FRAME_HEIGHT = _env_int("RGB_FRAME_HEIGHT", 480)
-IR_CAMERA_DEVICE = os.getenv("IR_CAMERA_DEVICE", "").strip()
+IR_CAMERA_DEVICE = os.getenv("IR_CAMERA_DEVICE", "/dev/video0").strip()
 IR_FRAME_WIDTH = _env_int("IR_FRAME_WIDTH", 160)
 IR_FRAME_HEIGHT = _env_int("IR_FRAME_HEIGHT", 120)
 IR_FPS = _env_float("IR_FPS", 9.0)
@@ -483,3 +485,9 @@ def ir_stream():
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={"Cache-Control": "no-store"},
     )
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=9000)
