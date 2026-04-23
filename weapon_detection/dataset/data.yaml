@@ -1,0 +1,6 @@
+path: C:\Users\sean_\Desktop\Projects\PeekIR\PeekIR_Pi\weapon_detection\dataset
+train: images/train
+val: images/val
+test: images/test
+names:
+  0: gun

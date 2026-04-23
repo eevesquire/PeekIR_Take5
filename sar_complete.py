@@ -4,9 +4,9 @@ SAR Complete — run a capture with ``sar_coordinator`` and immediately
 reconstruct a visualization with ``sar_reconstruct``.
 
 Reconstruction parameters are derived from the capture settings so the same
-CLI that drives the scan also drives the image reconstruction. Visualization
-artifacts (PNG heatmaps and the Plotly HTML) are written into the same
-``scan_N`` folder that holds the .bin row files.
+CLI that drives the scan also drives the image reconstruction. PNG heatmaps go
+next to the row data; the Plotly slice viewer HTML goes under the repo
+``visualizations/`` folder; 3D scatter and GIF use ``<scan>/visualizations/``.
 
 Usage:
     python sar_complete.py
@@ -21,13 +21,38 @@ All coordinator flags (``-W``, ``-H``, ``-s``, ``--snake``, ``--num-frames``,
 """
 
 import argparse
+import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import sar_coordinator as sc
 import socket
+
+_REPO_ROOT = Path(__file__).resolve().parent
+
+
+def _sanitize_scan_name(name: str) -> str:
+    s = name.strip()
+    if not s:
+        raise ValueError("scan name must not be empty")
+    if len(s) > 120:
+        raise ValueError("scan name is too long (max 120 characters)")
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]*", s):
+        raise ValueError(
+            "scan name may contain only letters, digits, underscores, and hyphens "
+            "(must start with a letter or digit)"
+        )
+    return s
+
+
+def _scan_name_slot_available(name: str, outputs_base: Path) -> bool:
+    out_dir = outputs_base.expanduser().resolve() / name
+    html_file = _REPO_ROOT / "visualizations" / f"{name}.html"
+    return not out_dir.exists() and not html_file.exists()
+
 
 # sar_reconstruct is imported lazily in run_reconstruction so the capture
 # half of this script stays usable on machines without numpy/scipy/matplotlib.
@@ -77,7 +102,7 @@ def build_parser():
         choices=["plotly", "matplotlib", "gif"],
         default="plotly",
         help="Primary visualization output (default: plotly). "
-             "'plotly' writes sar_interactive_slices.html into the scan folder, "
+             "'plotly' writes <scan_folder>.html under visualizations/, "
              "'matplotlib' opens the interactive slider window, "
              "'gif' renders a Z-slice animation to sar_slices.gif.",
     )
@@ -97,6 +122,24 @@ def build_parser():
                     help="Skip all Pi SSH automation (homing + tcp client launch).")
     pi.add_argument("--skip-pi-origin", action="store_true",
                     help="Skip the pre-scan 'move.py origin' homing step.")
+
+    naming = parser.add_argument_group("scan naming (dashboard)")
+    naming.add_argument(
+        "--scan-name",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help="Use outputs/<NAME> under -o instead of auto scan_N. "
+             "Fails if that folder exists or visualizations/<NAME>.html at repo root exists.",
+    )
+    naming.add_argument(
+        "--viz-html-root",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help="Override repo directory for Plotly slice HTML (default: "
+             f"{_REPO_ROOT / 'visualizations'}).",
+    )
     return parser
 
 
@@ -146,6 +189,9 @@ def build_reconstruct_argv(args, scan_folder):
     elif args.viz == "gif":
         argv += ["--gif", "sar_slices.gif", "--gif-fps", str(args.gif_fps)]
     # "matplotlib" -> pass nothing; sar_reconstruct opens its slider window
+
+    if getattr(args, "viz_html_root", None):
+        argv += ["--viz-html-root", str(args.viz_html_root)]
 
     return argv
 
@@ -213,8 +259,14 @@ def pi_launch_tcp_client(args, coordinator_host, port):
 
 def run_capture(args):
     """Run the TCP-coordinated capture. Returns the created scan folder path."""
-    out_path = sc.next_scan_output_dir(Path(args.output_dir))
-    args.output_dir = str(out_path)
+    out_base = Path(args.output_dir).expanduser().resolve()
+    sn = getattr(args, "scan_name", None)
+    if sn:
+        out_path = out_base / sn
+        args.output_dir = str(out_path)
+    else:
+        out_path = sc.next_scan_output_dir(out_base)
+        args.output_dir = str(out_path)
 
     try:
         os.makedirs(args.output_dir, exist_ok=True)
@@ -240,12 +292,12 @@ def run_capture(args):
 
     print(f"\nSAR Coordinator listening on port {args.port}")
     print("Start the clients:")
-    print(f"  Radar  — run sar_scan_tcp.lua in mmWave Studio")
+    print(f"  Radar  - run sar_scan_tcp.lua in mmWave Studio")
     if args.skip_pi_ssh:
-        print(f"  Gantry — run: python3 move.py tcp "
+        print(f"  Gantry - run: python3 move.py tcp "
               f"host={coordinator_host} port={args.port}")
     else:
-        print(f"  Gantry — auto-launching via SSH to "
+        print(f"  Gantry - auto-launching via SSH to "
               f"{args.pi_user}@{args.pi_host}")
     print()
 
@@ -300,6 +352,12 @@ def run_reconstruction(args, scan_folder):
     """Invoke ``sar_reconstruct.main`` with outputs landing in ``scan_folder``."""
     argv = build_reconstruct_argv(args, scan_folder)
 
+    print(
+        "__PEEKIR_PROGRESS__ "
+        + json.dumps({"phase": "reconstruct", "status": "start", "folder": str(scan_folder)}, separators=(",", ":")),
+        flush=True,
+    )
+
     print("\n" + "=" * 60)
     print("Reconstruction")
     print(f"  Folder: {scan_folder}")
@@ -316,6 +374,19 @@ def run_reconstruction(args, scan_folder):
         os.chdir(str(scan_folder))
         sys.argv = argv
         sr.main()
+    except BaseException as e:
+        print(
+            "__PEEKIR_PROGRESS__ "
+            + json.dumps({"phase": "reconstruct", "status": "error", "message": str(e)}, separators=(",", ":")),
+            flush=True,
+        )
+        raise
+    else:
+        print(
+            "__PEEKIR_PROGRESS__ "
+            + json.dumps({"phase": "reconstruct", "status": "complete", "folder": str(scan_folder)}, separators=(",", ":")),
+            flush=True,
+        )
     finally:
         sys.argv = saved_argv
         os.chdir(saved_cwd)
@@ -324,6 +395,23 @@ def run_reconstruction(args, scan_folder):
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
+    outputs_base = Path(args.output_dir).expanduser().resolve()
+    if args.scan_name:
+        try:
+            nm = _sanitize_scan_name(args.scan_name)
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(2)
+        if not _scan_name_slot_available(nm, outputs_base):
+            print(
+                f"Error: scan name '{nm}' is already used "
+                "(output folder under -o and/or Plotly HTML in repo visualizations/)."
+            )
+            sys.exit(2)
+        args.scan_name = nm
+        if args.viz_html_root is None:
+            args.viz_html_root = str(_REPO_ROOT / "visualizations")
 
     scan_folder = run_capture(args)
     if scan_folder is None:

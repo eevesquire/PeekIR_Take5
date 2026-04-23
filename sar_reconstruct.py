@@ -1,10 +1,31 @@
 import glob
 import os
 import argparse
+from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 from scipy.fft import fft, fft2, ifft2, fftshift
+
+def _inject_peekir_viz_embed_css(html: str) -> str:
+    """No body margins / scrollbars when opening Plotly HTML standalone or in iframe."""
+    if "peekir-viz-embed" in html:
+        return html
+    inject = (
+        '<style id="peekir-viz-embed">'
+        "html,body{margin:0!important;padding:0!important;overflow:hidden!important;"
+        "height:100%!important;width:100%!important;box-sizing:border-box}"
+        ".plotly-graph-div,.js-plotly-plot{overflow:hidden!important}"
+        "</style>"
+    )
+    low = html.lower()
+    i = low.find("<head")
+    if i < 0:
+        return inject + html
+    j = html.find(">", i)
+    if j < 0:
+        return inject + html
+    return html[: j + 1] + inject + html[j + 1 :]
 
 
 def load_data_cube(filename, samples, X, Y, option, snake=False):
@@ -543,6 +564,15 @@ def main():
     parser.add_argument('--3d_scatter', dest='scatter3d', action='store_true', help='Generate interactive 3D scatter plot')
     parser.add_argument('--3d_scatter_intensity', dest='scatter3d_intensity', type=float, default=95.0, help='Initial percentile threshold for 3D scatter plot (0-100)')
     parser.add_argument('--plotly', action='store_true', help='Generate interactive Plotly HTML with Z-slider instead of Matplotlib window')
+    parser.add_argument(
+        '--viz-html-root',
+        type=str,
+        default=None,
+        metavar='DIR',
+        help='Directory for the Plotly Z-slice viewer HTML '
+             f'(default: <repo>/visualizations). '
+             '3D scatter HTML and GIFs go under <folder>/visualizations/.',
+    )
     parser.add_argument('--gif', type=str, nargs='?', const='sar_slices.gif', default=None, metavar='FILE',
                         help="Export Z-slice animation as a GIF (default name: sar_slices.gif). "
                              "Skips the interactive viewer when set.")
@@ -583,6 +613,21 @@ def main():
 
     # Configuration
     data_dir = args.folder
+    scan_folder_name = os.path.basename(os.path.normpath(os.path.abspath(data_dir)))
+    if scan_folder_name in ("", ".", ".."):
+        scan_folder_name = "sar_scan"
+
+    scan_data_dir = os.path.abspath(data_dir)
+    _repo_root = Path(__file__).resolve().parent
+    # Plotly slice viewer: repo root visualizations/ (dashboard dropdown).
+    plotly_html_root = (
+        os.path.abspath(args.viz_html_root)
+        if args.viz_html_root
+        else str(_repo_root / "visualizations")
+    )
+    # 3D scatter + GIF: stay under the scan data tree.
+    aux_viz_root = os.path.join(scan_data_dir, "visualizations")
+
     X = args.frames
     Y = args.rows
     samples = args.samples
@@ -741,8 +786,9 @@ def main():
         plt.title('SAR X-Z Maximum Intensity Projection')
         plt.colorbar(label=clabel)
         plt.xlim(0, sw)
-        plt.savefig('sar_heatmap_xz.png')
-        print("Saved X-Z heatmap to sar_heatmap_xz.png")
+        xz_png = os.path.join(scan_data_dir, "sar_heatmap_xz.png")
+        plt.savefig(xz_png)
+        print(f"Saved X-Z heatmap to {xz_png}")
 
     # 2. Maximum Intensity Projection along X axis (View Y vs Z)
     if not args.xyonly:
@@ -756,8 +802,9 @@ def main():
         plt.title('SAR Y-Z Maximum Intensity Projection')
         plt.colorbar(label=clabel)
         plt.xlim(0, sh)
-        plt.savefig('sar_heatmap_yz.png')
-        print("Saved Y-Z heatmap to sar_heatmap_yz.png")
+        yz_png = os.path.join(scan_data_dir, "sar_heatmap_yz.png")
+        plt.savefig(yz_png)
+        print(f"Saved Y-Z heatmap to {yz_png}")
 
     # 3. Best Focus Image (Max over Z)
     mip_xy = np.max(sar_stack, axis=0)
@@ -772,8 +819,9 @@ def main():
     plt.xlim(0, sw)
     plt.ylim(0, sh)
     plt.colorbar(label=clabel)
-    plt.savefig('sar_heatmap_xy_max.png')
-    print("Saved X-Y max projection to sar_heatmap_xy_max.png")
+    xy_png = os.path.join(scan_data_dir, "sar_heatmap_xy_max.png")
+    plt.savefig(xy_png)
+    print(f"Saved X-Y max projection to {xy_png}")
 
     # 3.5 3D Scatter Plot (Volumetric Proxy)
     if args.scatter3d:
@@ -892,23 +940,23 @@ def main():
                 sliders=sliders
             )
 
-            output_file = get_unique_filename('sar_3d_scatter.html')
+            os.makedirs(aux_viz_root, exist_ok=True)
+            output_file = get_unique_filename(
+                os.path.join(aux_viz_root, f"{scan_folder_name}_3d_scatter.html")
+            )
             fig.write_html(output_file)
             print(f"Saved interactive 3D plot to {output_file}")
-            
-            # Attempt to open in browser
-            try:
-                import webbrowser
-                webbrowser.open(output_file)
-            except Exception:
-                pass
 
     # 4. GIF export (Z-slice animation)
     if args.gif:
         from io import BytesIO
         from PIL import Image
 
-        gif_path = get_unique_filename(args.gif)
+        gif_base = os.path.basename(args.gif)
+        os.makedirs(aux_viz_root, exist_ok=True)
+        gif_path = get_unique_filename(
+            os.path.join(aux_viz_root, f"{scan_folder_name}_{gif_base}")
+        )
         fps = max(1, args.gif_fps)
         duration_ms = int(1000 / fps)
 
@@ -969,7 +1017,54 @@ def main():
 
         # Initial data (middle slice)
         initial_idx = len(z_values) // 2
-        
+        sw = float(args.scan_width)
+        sh = float(args.scan_height)
+        # Fixed figure size for export/embed; frames carry data only (no per-frame layout).
+        _w_px = 800
+        # Short scans (few rows → small sh vs sw): natural height can be tiny. Do not use a
+        # floor height smaller than top+bottom margins or the plotting area collapses and the
+        # heatmap disappears / distorts in the HTML viewer.
+        _plotly_margins = dict(l=72, r=100, t=90, b=120, autoexpand=False)
+        _min_inner_plot_px = 120
+        _min_fig_h = (
+            _plotly_margins["t"] + _plotly_margins["b"] + _min_inner_plot_px
+        )
+        _h_px_natural = int(round(_w_px * sh / sw)) if sw > 0 else _min_fig_h
+        _h_px = max(_min_fig_h, _h_px_natural)
+        _fixed_layout = dict(
+            autosize=False,
+            width=_w_px,
+            height=_h_px,
+            uirevision="sar_slices",
+            margin=_plotly_margins,
+        )
+
+        # 2D layout: 1 mm horizontally = 1 mm vertically on screen (physical aspect).
+        # Anchor y to x (Plotly convention for heatmaps). Frames must repeat x/y/z
+        # or animation drops coordinates and stretches the plot.
+        _axis_layout = dict(
+            xaxis=dict(
+                title="Horizontal (mm)",
+                range=[0, sw],
+                showgrid=True,
+                zeroline=False,
+                automargin=False,
+            ),
+            yaxis=dict(
+                title="Vertical (mm)",
+                range=[0, sh],
+                scaleanchor="x",
+                scaleratio=1,
+                autorange=False,
+                showgrid=True,
+                zeroline=False,
+                automargin=False,
+            ),
+        )
+
+        # Static title + data-only frames: per-frame layout/title tweened on Play caused width jitter.
+        _plot_title = "SAR Reconstruction"
+
         # Create the base figure with the initial slice
         fig = go.Figure(
             data=[go.Heatmap(
@@ -982,16 +1077,19 @@ def main():
                 colorbar=dict(title='Intensity')
             )],
             layout=go.Layout(
-                title=f"SAR Reconstruction (Z={z_values[initial_idx]}mm)",
-                xaxis=dict(
-                    title="Horizontal (mm)", scaleanchor="y", scaleratio=1,
-                    range=[0, args.scan_width]),
-                yaxis=dict(title="Vertical (mm)", range=[0, args.scan_height]),
+                title=_plot_title,
+                **_axis_layout,
+                **_fixed_layout,
                 updatemenus=[dict(
                     type="buttons",
                     buttons=[dict(label="Play",
                                   method="animate",
-                                  args=[None, dict(frame=dict(duration=100, redraw=True), fromcurrent=True)])]
+                                  args=[None, dict(
+                                      mode="immediate",
+                                      frame=dict(duration=80, redraw=True),
+                                      transition=dict(duration=0),
+                                      fromcurrent=True,
+                                  )])]
                 )]
             )
         )
@@ -1000,9 +1098,16 @@ def main():
         print("Building frames for HTML animation...")
         for i, z_val in enumerate(z_values):
             frame = go.Frame(
-                data=[go.Heatmap(z=sar_stack[i])],
+                data=[go.Heatmap(
+                    z=sar_stack[i],
+                    x=x_axis,
+                    y=y_axis,
+                    colorscale='Jet',
+                    zmin=cmin,
+                    zmax=cmax,
+                    showscale=False,
+                )],
                 name=str(z_val),
-                layout=go.Layout(title=f"SAR Reconstruction (Z={z_val}mm)")
             )
             frames.append(frame)
             
@@ -1027,16 +1132,26 @@ def main():
                 steps=steps
             )]
         )
+        fig.update_layout(**_axis_layout)
+        fig.update_layout(**_fixed_layout)
 
-        output_file = get_unique_filename('sar_interactive_slices.html')
-        fig.write_html(output_file)
-        print(f"Saved interactive slice viewer to {output_file}")
-        
+        os.makedirs(plotly_html_root, exist_ok=True)
+        output_file = get_unique_filename(
+            os.path.join(plotly_html_root, f"{scan_folder_name}.html")
+        )
+        fig.write_html(output_file, config=dict(responsive=False))
+        # peekir_dashboard reads this to size the iframe without stretching.
         try:
-            import webbrowser
-            webbrowser.open(output_file)
-        except Exception:
+            with open(output_file, "r+", encoding="utf-8") as f:
+                body = f.read()
+                tagged = f"<!-- PEEKIR_VIZ_SIZE:{_w_px}x{_h_px} -->\n{body}"
+                out = _inject_peekir_viz_embed_css(tagged)
+                f.seek(0)
+                f.write(out)
+                f.truncate()
+        except OSError:
             pass
+        print(f"Saved interactive slice viewer to {output_file}")
 
     elif not args.gif:
         print("Opening interactive inspector (Matplotlib)...")

@@ -29,6 +29,7 @@ Protocol (newline-delimited text, two persistent TCP connections):
 """
 
 import argparse
+import json
 import math
 import os
 import re
@@ -185,9 +186,9 @@ def run_scan(gantry, radar, args):
     print(f"  Frames/row:   {num_frames} @ {frame_periodicity} ms "
           f"= {num_frames * frame_periodicity:.0f} ms capture")
     print(f"  Stabilize:    {stabilization_ms} ms")
-    print(f"  Snake scan:   {'yes (odd rows →, even rows ←)' if snake else 'no (return after each row)'}")
+    print(f"  Snake scan:   {'yes (odd rows ->, even rows <-)' if snake else 'no (return after each row)'}")
     if snake:
-        print(f"  DCA gap:      {args.dca_record_gap}s after each row (StopRecord → next ARM)")
+        print(f"  DCA gap:      {args.dca_record_gap}s after each row (StopRecord -> next ARM)")
     print(f"  Output:       {output_dir}")
     print(f"{'=' * 60}\n")
 
@@ -328,10 +329,23 @@ def run_scan(gantry, radar, args):
 
         elapsed = time.time() - row_start
         print(f"  Row {row} done ({elapsed:.1f}s)\n")
+        print(
+            "__PEEKIR_PROGRESS__ "
+            + json.dumps(
+                {"phase": "scan", "row": row, "total": num_rows, "elapsed_s": round(elapsed, 3)},
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
 
     total = time.time() - scan_start
+    print(
+        "__PEEKIR_PROGRESS__ "
+        + json.dumps({"phase": "scan", "status": "complete", "total": num_rows, "elapsed_s": round(total, 3)}, separators=(",", ":")),
+        flush=True,
+    )
     print(f"{'=' * 60}")
-    print(f"Scan complete — {num_rows} rows in {total:.1f}s")
+    print(f"Scan complete - {num_rows} rows in {total:.1f}s")
     print(f"Data saved to {output_dir}")
     print(f"{'=' * 60}")
 
@@ -422,8 +436,8 @@ def main():
 
     print(f"\nSAR Coordinator listening on port {args.port}")
     print("Start the clients:")
-    print(f"  Radar  — run sar_scan_tcp.lua in mmWave Studio")
-    print(f"  Gantry — run: python3 move.py tcp host=<this-ip> port={args.port}")
+    print(f"  Radar  - run sar_scan_tcp.lua in mmWave Studio")
+    print(f"  Gantry - run: python3 move.py tcp host=<this-ip> port={args.port}")
     print()
 
     gantry = None
