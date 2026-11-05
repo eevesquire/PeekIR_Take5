@@ -108,14 +108,14 @@ def build_parser():
     )
 
     pi = parser.add_argument_group("pi automation (SSH)")
-    pi.add_argument("--pi-host", default="10.244.13.117",
-                    help="Raspberry Pi hostname or IP (default 10.244.13.117)")
-    pi.add_argument("--pi-user", default="peekir",
-                    help="SSH user on the Pi (default 'peekir')")
-    pi.add_argument("--pi-project-dir", default="PeekIR_Pi",
-                    help="Project path on the Pi, relative to $HOME (default 'PeekIR_Pi')")
-    pi.add_argument("--pi-venv", default="venv",
-                    help="Virtualenv directory inside the project (default 'venv')")
+    pi.add_argument("--pi-host", default="10.245.61.148",
+                    help="Raspberry Pi hostname or IP (default  10.245.61.148)")
+    pi.add_argument("--pi-user", default="takefive",
+                    help="SSH user on the Pi (default 'takefive')")
+    pi.add_argument("--pi-project-dir", default="PeekIR_Final",
+                    help="Project path on the Pi, relative to $HOME (default 'PeekIR_Final')")
+    pi.add_argument("--pi-venv", default=".venv",
+                    help="Virtualenv directory inside the project (default '.venv')")
     pi.add_argument("--coordinator-host", default=None,
                     help="IP the Pi should dial back to. Auto-detected if omitted.")
     pi.add_argument("--skip-pi-ssh", action="store_true",

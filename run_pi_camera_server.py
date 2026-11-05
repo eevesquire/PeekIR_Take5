@@ -111,17 +111,17 @@ def main() -> None:
     )
     parser.add_argument(
         "--pi-user",
-        default="peekir",
+        default="takefive",
         help="SSH user on the Pi (default %(default)s)",
     )
     parser.add_argument(
         "--pi-project-dir",
-        default="PeekIR_Pi",
+        default="PeekIR_Final",
         help="Project path on the Pi relative to $HOME (default %(default)s)",
     )
     parser.add_argument(
         "--pi-venv",
-        default="venv",
+        default=".venv",
         help="Virtualenv directory inside the project (default %(default)s)",
     )
     parser.add_argument(

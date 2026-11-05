@@ -94,7 +94,7 @@ def _next_available_scan_name() -> str:
 def _scan_name_slot_available(name: str) -> bool:
     return not (OUTPUTS_DIR / name).exists() and not (VIZ_DIR / f"{name}.html").exists()
 
-PI_BASE_URL = os.getenv("PI_BASE_URL", "http://10.244.13.117:9000").rstrip("/")
+PI_BASE_URL = os.getenv("PI_BASE_URL", "http://10.245.61.148:9000").rstrip("/")
 PEEKIR_DATA_ROOT = os.getenv("PEEKIR_DATA_ROOT", "").strip()
 # Set PEEKIR_DEBUG=1 for extra Pi connectivity logs (browser img URLs are client-side only).
 PEEKIR_DEBUG = os.getenv("PEEKIR_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -202,9 +202,9 @@ PI_SSH_AUTO_START = os.getenv("PI_SSH_AUTO_START", "1").strip().lower() not in {
     "no",
     "off",
 }
-PI_SSH_USER = os.getenv("PI_SSH_USER", "peekir")
-PI_SSH_PROJECT_DIR = os.getenv("PI_SSH_PROJECT_DIR", "PeekIR_Pi")
-PI_SSH_VENV = os.getenv("PI_SSH_VENV", "venv")
+PI_SSH_USER = os.getenv("PI_SSH_USER", "takefive")
+PI_SSH_PROJECT_DIR = os.getenv("PI_SSH_PROJECT_DIR", "PeekIR_Final")
+PI_SSH_VENV = os.getenv("PI_SSH_VENV", ".venv")
 
 
 def _pi_ssh_host() -> str:

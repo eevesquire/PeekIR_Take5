@@ -230,9 +230,8 @@ def sleep_with_limit_check(duration, axis, direction):
     return False
 
 def up(dist_mm):
-    #these are commands calling, using old library, want to swap out, not direction but everything else
     duration = abs(dist_mm)/speedY_mm_per_s
-    # print(f"DEBUG: Moving UP {dist_mm} mm, duration {duration:.2f}s")
+    print(f"Moving UP {dist_mm} mm, duration {duration:.2f}s") #debug
     dirY.on() # Set direction to CW
     pulY.start(duty_cycle)
     print("MOTOR_STARTED", flush=True)
@@ -242,7 +241,7 @@ def up(dist_mm):
 
 def down(dist_mm):
     duration = abs(dist_mm)/speedY_mm_per_s
-    # print(f"DEBUG: Moving DOWN {dist_mm} mm, duration {duration:.2f}s")
+    print(f"Moving DOWN {dist_mm} mm, duration {duration:.2f}s") #debug
     dirY.off() # Set direction to CCW
     pulY.start(duty_cycle)
     print("MOTOR_STARTED", flush=True)
@@ -252,7 +251,7 @@ def down(dist_mm):
 
 def right(dist_mm):
     duration = abs(dist_mm)/speedX_mm_per_s
-    # print(f"DEBUG: Moving RIGHT {dist_mm} mm, duration {duration:.2f}s")
+    print(f"Moving RIGHT {dist_mm} mm, duration {duration:.2f}s") #debug
     dirX.on() # Set direction to CW
     pulX.start(duty_cycle)
     print("MOTOR_STARTED", flush=True)
@@ -262,7 +261,7 @@ def right(dist_mm):
 
 def left(dist_mm):
     duration = abs(dist_mm)/speedX_mm_per_s
-    # print(f"DEBUG: Moving LEFT {dist_mm} mm, duration {duration:.2f}s")
+    print(f"Moving LEFT {dist_mm} mm, duration {duration:.2f}s") #debug
     dirX.off() # Set direction to CCW
     pulX.start(duty_cycle)
     print("MOTOR_STARTED", flush=True)

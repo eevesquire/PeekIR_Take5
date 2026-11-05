@@ -81,6 +81,7 @@ def load_data_cube(filename, samples, X, Y, option, snake=False):
         ch4 = np.zeros_like(ch1)
     else:
         # Default to 4 RX Mode (I1 I2 I3 I4 Q1 Q2 Q3 Q4 format)
+        data_int = data_int[: len(data_int) // 8 * 8] 
         ch1 = data_int[0::8] + 1j * data_int[4::8]
         ch2 = data_int[1::8] + 1j * data_int[5::8]
         ch3 = data_int[2::8] + 1j * data_int[6::8]
@@ -107,6 +108,12 @@ def load_data_cube(filename, samples, X, Y, option, snake=False):
         full_channel_data = (ch1 + ch2 + ch3 + ch4) / 4
     else:
         raise ValueError(f"Invalid option: {option}")
+
+    needed = X * samples
+    if len(full_channel_data) < needed:
+        got = len(full_channel_data) // samples
+        print(f"Warning: {os.path.basename(filename)} has {got}/{X} frames; zero-filling the rest")
+        full_channel_data = np.pad(full_channel_data, (0, needed - len(full_channel_data)))
 
     data_cube = np.zeros((samples, Y, X), dtype=np.complex128)
 
@@ -181,14 +188,14 @@ def resolve_row_data_path(data_dir, filename):
     return primary
 
 
-def stack(samples, X, Y, option, data_dir, filename_fn, snake=False):
+def stack(samples, X, Y, option, data_dir, filename_fn, snake=False, n_move=None,
+          conj_even_rows=False):
     """
-    Load data cubes and stack them along the Y dimension.
-    When snake is True, reverse X for even 1-based rows (2, 4, ...) to match
-    boustrophedon capture. This must be applied here: load_data_cube is called
-    with Y=1 per file, so its internal snake logic never sees even row indices.
+    Load per-row data and stack along Y. Keeps only the first n_move frames of each row
+    (recorded while the gantry was moving), then reverses even rows for snake scans.
     """
-    data_stack = np.zeros((samples, Y, X), dtype=np.complex128)
+    n_keep = X if n_move is None else min(X, n_move)
+    data_stack = np.zeros((samples, Y, n_keep), dtype=np.complex128)
     fallback_note_printed = False
 
     for y in range(Y):
@@ -203,9 +210,11 @@ def stack(samples, X, Y, option, data_dir, filename_fn, snake=False):
             fallback_note_printed = True
 
         cube = load_data_cube(filepath, samples, X, 1, option, snake=False)
-        row_data = cube[:, 0, :]
+        row_data = cube[:, 0, :n_keep]          # drop frames after the gantry stopped
         if snake and (y + 1) % 2 == 0:
-            row_data = np.conj(row_data[:, ::-1])
+            row_data = row_data[:, ::-1]
+            if conj_even_rows:
+                row_data = np.conj(row_data)
         data_stack[:, y, :] = row_data
 
     return data_stack
@@ -635,12 +644,15 @@ def main():
     def filename_fn(y):
         return args.filename_pattern.format(y=y)
 
-    print(f"Loading data from '{data_dir}' ({Y} rows x {X} frames, pattern: {args.filename_pattern})...")
-    raw_data = stack(samples, X, Y, 1, data_dir, filename_fn, snake=args.snake)
-
     # Spatial step sizes derived from scan speed and frame periodicity
-    n_fft_time = 1024
     dx = args.speed * (args.periodicity / 1000.0)  # mm per frame
+    n_move = int(round(args.scan_width / dx))       # frames recorded while moving
+    print(f"Loading data from '{data_dir}' ({Y} rows, using {min(X, n_move)} of {X} frames per row)...")
+    raw_data = stack(samples, X, Y, 5, data_dir, filename_fn, snake=args.snake,
+                     n_move=n_move, conj_even_rows=False)
+
+    n_fft_time = 1024
+    # dx = args.speed * (args.periodicity / 1000.0)  # mm per frame
     dy = args.y_step
     n_fft_space = 1024
 

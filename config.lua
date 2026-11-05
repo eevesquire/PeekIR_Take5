@@ -1,0 +1,6 @@
+   ar1.ChanNAdcConfig(1, 1, 0, 1, 1, 1, 1, 2, 1, 0)
+   ar1.RfInit()
+   RSTD.Sleep(1000)
+   ar1.DataPathConfig(513, 1216644097, 0)
+   ar1.LvdsClkConfig(1, 1)
+   ar1.LVDSLaneConfig(0, 1, 1, 1, 1, 1, 0, 0)

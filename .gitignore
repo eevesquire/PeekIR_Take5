@@ -1,2 +1,7 @@
+__pycache__/
+*.pyc
+position.txt
+current_index.txt
 outputs/
 visualizations/
+*.bin
