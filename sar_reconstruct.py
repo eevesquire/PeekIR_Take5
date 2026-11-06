@@ -618,6 +618,12 @@ def main():
     parser.add_argument('--db-range', type=float, default=40.0,
                         help="Dynamic range in dB when --db is used (default 40). "
                              "Lower values (e.g. 20) show only the strongest features.")
+    parser.add_argument('--depth-min-frac', type=float, default=0.2,
+                        help="Depth map: grey out pixels fainter than this fraction of the "
+                             "brightest pixel (default 0.2), so noise isn't coloured.")
+    parser.add_argument('--save-npz', action='store_true',
+                        help="Save the reconstructed volume + X-Y max projection as sar_volume.npz "
+                             "in the scan folder (raw linear intensity, for ML training).")
     args = parser.parse_args()
 
     # Configuration
@@ -715,6 +721,7 @@ def main():
         print("XY-only flag set; skipping X-Z and Y-Z heatmap generation.")
 
     sar_stack = []
+    kept_z = []   # Z values actually reconstructed (out-of-range ones are skipped)
 
     # Variables to hold axis info (assuming constant across Z)
     x_axis = None
@@ -765,10 +772,32 @@ def main():
         y_axis = np.asarray(y_axis) + scan_height_y / 2
         
         # Store magnitude
-        # MATLAB: fliplr(sarImage)
-        sar_stack.append(np.abs(np.fliplr(sar_image)))
+        # The original MATLAB code mirrored the image here (fliplr). With PeekIR's gantry that
+        # put objects on the wrong side (an L-shaped target viewed from the radar appeared
+        # mirrored), so the image is kept as reconstructed: image x = gantry x - x_start.
+        sar_stack.append(np.abs(sar_image))
+        kept_z.append(z_mm)
 
     sar_stack = np.array(sar_stack) # Shape (N_z, Y, X)
+    z_values = np.asarray(kept_z, dtype=float)   # keep Z axis aligned with sar_stack
+
+    # Depth map: for each (x, y), the Z of the brightest slice.
+    mip_xy_lin = np.max(sar_stack, axis=0)
+    depth_xy = z_values[np.argmax(sar_stack, axis=0)]
+
+    if args.save_npz:
+        # Raw linear magnitudes (not dB, not normalised) so training can choose its own scaling.
+        npz_path = os.path.join(scan_data_dir, "sar_volume.npz")
+        np.savez_compressed(
+            npz_path,
+            volume=sar_stack.astype(np.float32),                 # (Z, Y, X)
+            mip_xy=mip_xy_lin.astype(np.float32),                # (Y, X), same as the X-Y PNG
+            depth_xy=depth_xy.astype(np.float32),                # (Y, X), mm: Z of brightest slice
+            x_mm=np.asarray(x_axis, dtype=np.float32),
+            y_mm=np.asarray(y_axis, dtype=np.float32),
+            z_mm=np.asarray(z_values, dtype=np.float32),
+        )
+        print(f"Saved volume {sar_stack.shape} (Z, Y, X) to {npz_path}")
 
     def to_db(data, db_range):
         """Convert magnitude data to dB with clamped dynamic range."""
@@ -834,6 +863,26 @@ def main():
     xy_png = os.path.join(scan_data_dir, "sar_heatmap_xy_max.png")
     plt.savefig(xy_png)
     print(f"Saved X-Y max projection to {xy_png}")
+
+    # 3.1 Depth map: which Z the brightest return at each (x, y) came from
+    if len(z_values) > 1:
+        faint = mip_xy_lin < args.depth_min_frac * mip_xy_lin.max()
+        fig_d, ax_d = plt.subplots(figsize=(10, 6))
+        ax_d.set_facecolor('0.85')   # grey = too faint to have a meaningful depth
+        mesh_d = ax_d.pcolormesh(x_axis, y_axis, np.ma.masked_where(faint, depth_xy),
+                                 cmap='viridis_r', shading='nearest',
+                                 vmin=z_values[0], vmax=z_values[-1])
+        ax_d.set_xlabel('Horizontal (mm)')
+        ax_d.set_ylabel('Vertical (mm)')
+        ax_d.set_title('SAR Depth Map (Z of brightest return; grey = faint)')
+        ax_d.set_aspect('equal')
+        ax_d.set_xlim(0, sw)
+        ax_d.set_ylim(0, sh)
+        fig_d.colorbar(mesh_d, ax=ax_d, label='Depth Z (mm), yellow = nearer')
+        depth_png = os.path.join(scan_data_dir, "sar_heatmap_depth.png")
+        fig_d.savefig(depth_png)
+        plt.close(fig_d)
+        print(f"Saved depth map to {depth_png}")
 
     # 3.5 3D Scatter Plot (Volumetric Proxy)
     if args.scatter3d:

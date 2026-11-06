@@ -336,11 +336,6 @@ _sse_subscribers: list[asyncio.Queue] = []
 
 _viz_docs: dict[str, Path] = {}
 
-_metal_queue: queue.Queue = queue.Queue()
-_metal_ws_clients: list[WebSocket] = []
-_metal_state: dict[str, Any] = {"thread": None, "loop": None, "stop": None}
-_metal_fanout_task: asyncio.Task | None = None
-
 
 def _allowed_path(path: Path) -> bool:
     try:
@@ -465,66 +460,9 @@ def _scan_reader_thread(proc: subprocess.Popen) -> None:
     )
 
 
-def _metal_queue_get() -> Any | None:
-    try:
-        return _metal_queue.get(timeout=0.4)
-    except queue.Empty:
-        return None
-
-
-def _stop_metal_worker() -> None:
-    loop = _metal_state.get("loop")
-    stop = _metal_state.get("stop")
-    if loop is not None and stop is not None and not stop.is_set():
-
-        def _set() -> None:
-            stop.set()
-
-        loop.call_soon_threadsafe(_set)
-    th = _metal_state.get("thread")
-    if th is not None and th.is_alive():
-        th.join(timeout=3.0)
-
-
-def _metal_worker(device_name: str | None, address: str | None) -> None:
-    import metal_detector as md
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    stop = asyncio.Event()
-    _metal_state["loop"] = loop
-    _metal_state["stop"] = stop
-
-    def on_notify(d: dict[str, Any]) -> None:
-        _metal_queue.put({"type": "notify", "data": d})
-
-    def on_status(kind: str, payload: dict[str, Any]) -> None:
-        _metal_queue.put({"type": "status", "kind": kind, "payload": payload})
-
-    try:
-        loop.run_until_complete(
-            md.monitor(
-                device_name,
-                address,
-                3.0,
-                stop_event=stop,
-                on_notify=on_notify,
-                on_status=on_status,
-                verbose=False,
-            )
-        )
-    finally:
-        loop.close()
-        if _metal_state.get("loop") is loop:
-            _metal_state["loop"] = None
-            _metal_state["stop"] = None
-        if _metal_state.get("thread") is threading.current_thread():
-            _metal_state["thread"] = None
-
-
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    global _sse_loop, _metal_fanout_task
+    global _sse_loop
     _sse_loop = asyncio.get_event_loop()
     print(
         "[peekir_dashboard] Startup: PI_BASE_URL="
@@ -542,23 +480,6 @@ async def _lifespan(app: FastAPI):
 
     asyncio.create_task(_wait_pi_bg())
 
-    async def _metal_fanout():
-        while True:
-            msg = await asyncio.to_thread(_metal_queue_get)
-            if msg is None:
-                await asyncio.sleep(0)
-                continue
-            dead: list[WebSocket] = []
-            for ws in list(_metal_ws_clients):
-                try:
-                    await ws.send_json(msg)
-                except Exception:
-                    dead.append(ws)
-            for ws in dead:
-                if ws in _metal_ws_clients:
-                    _metal_ws_clients.remove(ws)
-
-    _metal_fanout_task = asyncio.create_task(_metal_fanout())
     if PEEKIR_FACE_WARMUP:
         threading.Thread(
             target=_deepface_models_warmup,
@@ -567,10 +488,6 @@ async def _lifespan(app: FastAPI):
         ).start()
     yield
     _stop_pi_ssh_camera_server()
-    if _metal_fanout_task:
-        _metal_fanout_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await _metal_fanout_task
 
 
 app = FastAPI(title="PeekIR Dashboard", lifespan=_lifespan)
@@ -1077,51 +994,6 @@ async def pi_ir_gun_detect():
     return out
 
 
-@app.post("/api/metal/pair")
-async def metal_pair(body: dict[str, Any] | None = None):
-    try:
-        import metal_detector as md
-    except ImportError as e:
-        raise HTTPException(501, "BLE dependencies missing (pip install bleak)") from e
-
-    body = body or {}
-    name = body.get("name") or md.DEFAULT_DEVICE_NAME
-    address = body.get("address") or None
-    if isinstance(address, str) and not address.strip():
-        address = None
-
-    await asyncio.to_thread(_stop_metal_worker)
-
-    t = threading.Thread(
-        target=_metal_worker,
-        args=(name, address),
-        daemon=True,
-    )
-    _metal_state["thread"] = t
-    t.start()
-    return {"ok": True}
-
-
-@app.post("/api/metal/stop")
-async def metal_stop():
-    await asyncio.to_thread(_stop_metal_worker)
-    return {"ok": True}
-
-
-@app.websocket("/ws/metal")
-async def metal_ws(websocket: WebSocket):
-    await websocket.accept()
-    _metal_ws_clients.append(websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        pass
-    finally:
-        if websocket in _metal_ws_clients:
-            _metal_ws_clients.remove(websocket)
-
-
 _DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1163,7 +1035,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     }
     .top-panels {
       display: grid;
-      grid-template-columns: 2fr 1fr;
+      grid-template-columns: 1fr;
       gap: 1rem;
       margin: 1rem;
       align-items: start;
@@ -1476,41 +1348,6 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       0%, 100% { box-shadow: none; }
       50% { box-shadow: inset 0 0 0 3px var(--danger); background: rgba(232, 93, 93, 0.14); }
     }
-    #metalPanel.metal-alert-active {
-      animation: metalPanelAlert 0.85s ease-in-out infinite;
-    }
-    @keyframes metalPanelAlert {
-      0%, 100% {
-        box-shadow: inset 0 0 0 2px transparent;
-        background: var(--panel);
-      }
-      50% {
-        box-shadow: inset 0 0 0 3px var(--danger);
-        background: rgba(232, 93, 93, 0.12);
-      }
-    }
-    .metal-conn-tag {
-      display: inline-block;
-      padding: 0.2rem 0.55rem;
-      border-radius: 4px;
-      font-weight: 700;
-      font-size: 0.8rem;
-    }
-    .metal-conn-tag--disconnected { background: #1a1f28; color: var(--muted); }
-    .metal-conn-tag--stopped { background: #1a1f28; color: var(--muted); }
-    .metal-conn-tag--connecting { background: #3a3020; color: #e5b84a; }
-    .metal-conn-tag--connected { background: #1a3024; color: var(--ok); }
-    .metal-conn-tag--error { background: #3a2020; color: var(--danger); }
-    .metal-high {
-      display: inline-block;
-      padding: 0.25rem 0.6rem;
-      border-radius: 4px;
-      font-weight: 700;
-      background: #3a2020;
-      color: var(--danger);
-    }
-    .metal-high.off { background: #1a2520; color: var(--muted); }
-    .bat { font-size: 1.2rem; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -1542,21 +1379,6 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         <div class="bar"><div id="scanBar"></div></div>
         <div id="scanLog"></div>
       </div>
-    </section>
-
-    <section id="metalPanel">
-      <h2>Metal detector</h2>
-      <div class="row">
-        <div>
-          <button class="primary" id="btnPair">Pair</button>
-          <button id="btnMetalStop">Stop</button>
-        </div>
-      </div>
-      <p style="margin-top:0.75rem">
-        Status: <span id="metalConn" class="metal-conn-tag metal-conn-tag--disconnected">Disconnected</span>
-        &nbsp;|&nbsp; Battery: <span class="bat" id="metalBat">—</span>
-        &nbsp;|&nbsp; <span class="metal-high off" id="metalAlert">METAL: LOW</span>
-      </p>
     </section>
   </div>
 
@@ -1909,90 +1731,6 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         img.src = 'data:image/png;base64,' + j.annotated_image_b64;
       } finally {
         btn.disabled = false;
-      }
-    };
-
-    function setMetalConnFromKind(kind, payload) {
-      const el = document.getElementById('metalConn');
-      let css = 'disconnected';
-      let text = 'Disconnected';
-      const p = payload || {};
-      if (kind === 'scanning' || kind === 'connecting') {
-        css = 'connecting';
-        text = 'Connecting';
-      } else if (kind === 'connected') {
-        css = 'connected';
-        text = 'Connected';
-      } else if (kind === 'listening') {
-        css = 'connected';
-        text = 'Listening';
-      } else if (kind === 'disconnected') {
-        css = 'disconnected';
-        text = 'Disconnected';
-      } else if (kind === 'error') {
-        css = 'error';
-        const msg = p.message ? String(p.message) : '';
-        text = msg ? ('Error: ' + msg.slice(0, 120)) : 'Error';
-      } else if (kind === 'stopped') {
-        css = 'stopped';
-        text = 'Stopped';
-      } else {
-        text = kind;
-        css = 'disconnected';
-      }
-      el.className = 'metal-conn-tag metal-conn-tag--' + css;
-      el.textContent = text;
-    }
-
-    document.getElementById('btnPair').onclick = async () => {
-      setMetalConnFromKind('connecting', {});
-      try {
-        const r = await fetch('/api/metal/pair', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({})
-        });
-        if (!r.ok) {
-          setMetalConnFromKind('error', { message: await r.text() });
-        }
-      } catch (e) {
-        setMetalConnFromKind('error', { message: String(e) });
-      }
-    };
-    document.getElementById('btnMetalStop').onclick = async () => {
-      await fetch('/api/metal/stop', { method: 'POST' });
-      document.getElementById('metalPanel').classList.remove('metal-alert-active');
-      setMetalConnFromKind('stopped', {});
-    };
-
-    const wsMetal = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws/metal');
-    wsMetal.onmessage = (ev) => {
-      let m;
-      try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (m.type === 'status') {
-        setMetalConnFromKind(m.kind, m.payload || {});
-        if (m.kind === 'disconnected' || m.kind === 'error') {
-          document.getElementById('metalPanel').classList.remove('metal-alert-active');
-        }
-      }
-      if (m.type === 'notify' && m.data) {
-        const d = m.data;
-        if (d.battery_percent != null) {
-          document.getElementById('metalBat').textContent = d.battery_percent + '%';
-        } else if (d.battery_text) {
-          document.getElementById('metalBat').textContent = d.battery_text;
-        }
-        const el = document.getElementById('metalAlert');
-        const panel = document.getElementById('metalPanel');
-        if (d.metal_high === true) {
-          el.textContent = 'METAL: HIGH';
-          el.classList.remove('off');
-          panel.classList.add('metal-alert-active');
-        } else if (d.metal_high === false) {
-          el.textContent = 'METAL: LOW';
-          el.classList.add('off');
-          panel.classList.remove('metal-alert-active');
-        }
       }
     };
 

@@ -96,6 +96,9 @@ def build_parser():
     recon.add_argument("--3d_scatter_intensity", dest="scatter3d_intensity",
                        type=float, default=95.0)
     recon.add_argument("--gif-fps", type=int, default=10)
+    recon.add_argument("--save-npz", action=argparse.BooleanOptionalAction, default=True,
+                       help="Save sar_volume.npz (raw volume + X-Y projection) for ML training "
+                            "(default: on; --no-save-npz to skip)")
 
     recon.add_argument(
         "--viz",
@@ -183,6 +186,8 @@ def build_reconstruct_argv(args, scan_folder):
         argv.append("--xyonly")
     if args.scatter3d:
         argv.append("--3d_scatter")
+    if getattr(args, "save_npz", False):
+        argv.append("--save-npz")
 
     if args.viz == "plotly":
         argv.append("--plotly")

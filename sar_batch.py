@@ -49,7 +49,6 @@ import datetime as _dt
 import glob
 import json
 import os
-import shutil
 import socket
 import subprocess
 import sys
@@ -172,6 +171,7 @@ class PersistentRadar(sc.ClientConnection):
         self.configure_once = configure_once
         self.last_configure = None
         self._fake = []
+        self.errors = []          # ERROR replies seen during the current scan
 
     def send(self, msg):
         if self.configure_once and msg.startswith("CONFIGURE ") and msg == self.last_configure:
@@ -185,7 +185,10 @@ class PersistentRadar(sc.ClientConnection):
     def recv(self, timeout=None):
         if self._fake:
             return self._fake.pop(0)
-        return super().recv(timeout)
+        line = super().recv(timeout)
+        if line.startswith("ERROR"):
+            self.errors.append(line)
+        return line
 
     def drain(self, quiet_s=1.5):
         """Discard any late replies left over from an aborted scan."""
@@ -389,7 +392,12 @@ def check_rows(scan_dir, num_rows):
         if size == 0:
             missing.append(r)
         sizes[r] = size
-    return missing, sizes
+    # A row much smaller than the typical row was cut short (e.g. DCA1000 timeout).
+    good = sorted(v for v in sizes.values() if v > 0)
+    if good:
+        typical = good[len(good) // 2]
+        missing += [r for r, v in sizes.items() if 0 < v < 0.9 * typical]
+    return sorted(set(missing)), sizes
 
 
 def grab_snapshots(base_url, scan_dir, warned):
@@ -563,12 +571,15 @@ def main():
                     scan_args = copy.copy(args)
                     scan_args.output_dir = str(scan_dir)
                     scans_since_home = None          # unknown until run_scan finishes cleanly
+                    clients.radar.errors = []
                     sc.run_scan(clients.gantry, clients.radar, scan_args)
 
                     time.sleep(1.0)                  # let the DCA1000 finish the last file
                     missing, sizes = check_rows(str(scan_dir), num_rows)
-                    if missing:
-                        error = f"{len(missing)}/{num_rows} rows missing or empty (first: {missing[:5]})"
+                    if clients.radar.errors:
+                        error = f"radar reported: {clients.radar.errors[0]}"
+                    elif missing:
+                        error = f"{len(missing)}/{num_rows} rows missing, empty or short (first: {missing[:5]})"
                     else:
                         # run_scan only returns normally-with-all-rows when every row completed,
                         # so the gantry is at the known end position.
@@ -607,6 +618,10 @@ def main():
                         "num_frames": num_frames, "num_rows": num_rows,
                         "samples": args.samples, "snake": args.snake,
                     },
+                    "reconstruction": {
+                        "zstart": args.zstart, "zend": args.zend, "zstep": args.zstep,
+                        "zindex": args.zindex, "algo": args.algo, "window": args.window,
+                    },
                 }
 
                 if error is None:
@@ -630,9 +645,22 @@ def main():
                 if scan_dir.exists():
                     failed_dir = outputs_base / "_failed" / f"{name}_{_dt.datetime.now():%H%M%S}"
                     failed_dir.parent.mkdir(exist_ok=True)
-                    shutil.move(str(scan_dir), str(failed_dir))
-                    with open(failed_dir / "scan_meta.json", "w", encoding="utf-8") as f:
-                        json.dump(record, f, indent=2)
+                    try:
+                        # os.rename, not shutil.move: if a file is still locked we want a clean
+                        # failure, not a half-copied folder.
+                        os.rename(scan_dir, failed_dir)
+                        meta_dir = failed_dir
+                    except OSError as e:
+                        # e.g. a DCA1000 recorder process or Excel still has a row file open.
+                        log(f"Couldn't move {name} to _failed ({e}). Leaving it in place, "
+                            "marked failed in its scan_meta.json; retrying under a new name.")
+                        meta_dir = scan_dir
+                        name, _ = next_free_name(scan_prefix(args, view, label), 0, scan_base)
+                    try:
+                        with open(meta_dir / "scan_meta.json", "w", encoding="utf-8") as f:
+                            json.dump(record, f, indent=2)
+                    except OSError:
+                        pass
                 if args.skip_pi_ssh and scans_since_home is None:
                     raise RuntimeError("scan failed mid-way with --skip-pi-ssh; gantry position "
                                        "unknown. Home it and restart the batch.")
