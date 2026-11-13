@@ -772,10 +772,10 @@ def main():
         y_axis = np.asarray(y_axis) + scan_height_y / 2
         
         # Store magnitude
-        # The original MATLAB code mirrored the image here (fliplr). With PeekIR's gantry that
-        # put objects on the wrong side (an L-shaped target viewed from the radar appeared
-        # mirrored), so the image is kept as reconstructed: image x = gantry x - x_start.
-        sar_stack.append(np.abs(sar_image))
+        # Mirror left-right (as in the original MATLAB code, fliplr) so that
+        # image x = gantry x - x_start. Verified on the PeekIR gantry with move.py:
+        # without this flip, features appear at x_start + width - image x.
+        sar_stack.append(np.abs(np.fliplr(sar_image)))
         kept_z.append(z_mm)
 
     sar_stack = np.array(sar_stack) # Shape (N_z, Y, X)

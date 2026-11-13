@@ -143,7 +143,57 @@ def build_parser():
         help="Override repo directory for Plotly slice HTML (default: "
              f"{_REPO_ROOT / 'visualizations'}).",
     )
+
+    ir = parser.add_argument_group("IR snapshot sync (dashboard)")
+    ir.add_argument("--ir-sync-file", type=str, default=None, metavar="PATH",
+                    help="After homing, print a 'ready_for_ir' progress line and wait until PATH exists "
+                         "(the dashboard creates it once its IR snapshot is taken, so the gantry "
+                         "can't block the camera).")
+    ir.add_argument("--ir-sync-timeout", type=float, default=60.0, metavar="SEC",
+                    help="Max seconds to wait for --ir-sync-file (default 60; the scan then continues).")
+    ir.add_argument("--home-after-scan", action="store_true",
+                    help="Home the gantry (move.py origin) right after the capture, before reconstruction, "
+                         "so it is out of the IR camera's view for the 'after' snapshot.")
     return parser
+
+
+def _progress(**kw):
+    print("__PEEKIR_PROGRESS__ " + json.dumps(kw, separators=(",", ":")), flush=True)
+
+
+def wait_for_ir_sync(args):
+    """Gantry is homed and out of the way: let the dashboard take its IR snapshot, then go on."""
+    path = getattr(args, "ir_sync_file", None)
+    if not path:
+        return
+    import time
+    p = Path(path)
+    _progress(phase="ready_for_ir")
+    print("[IR] Gantry in position; waiting for the dashboard's IR snapshot...", flush=True)
+    t0 = time.time()
+    while not p.exists():
+        if time.time() - t0 > args.ir_sync_timeout:
+            print(f"[IR] No IR snapshot after {args.ir_sync_timeout:.0f}s; continuing without waiting.", flush=True)
+            return
+        time.sleep(0.2)
+    try:
+        p.unlink()
+    except OSError:
+        pass
+    print(f"[IR] Snapshot taken ({time.time() - t0:.1f}s); starting the scan.", flush=True)
+
+
+def home_after_scan(args):
+    if not getattr(args, "home_after_scan", False):
+        return
+    if args.skip_pi_ssh:
+        print("[Pi SSH] --home-after-scan ignored (--skip-pi-ssh).")
+        return
+    try:
+        pi_home_gantry(args)
+        _progress(phase="homed_after_scan")
+    except Exception as e:
+        print(f"[Pi SSH] Homing after the scan failed: {e} (continuing with reconstruction)", flush=True)
 
 
 def build_reconstruct_argv(args, scan_folder):
@@ -288,6 +338,9 @@ def run_capture(args):
             print(f"Homing failed: {e}")
             return None
 
+    # 1b. Gantry is out of the way: dashboard IR snapshot (only with --ir-sync-file).
+    wait_for_ir_sync(args)
+
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(("0.0.0.0", args.port))
@@ -423,6 +476,7 @@ def main():
         print("Scan did not complete; skipping reconstruction.")
         return
 
+    home_after_scan(args)
     run_reconstruction(args, scan_folder)
 
 

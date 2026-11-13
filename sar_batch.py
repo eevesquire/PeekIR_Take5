@@ -17,6 +17,9 @@ every scan. This script instead:
   * calls ``sar_coordinator.run_scan`` unchanged for each scan;
   * verifies every row file was actually written and retries failed scans;
   * optionally grabs an RGB + IR snapshot from the Pi camera server per scan;
+  * captures raw IR bursts at the start and end of every scan and measures the
+    metal size / threat level against a no-metal IR reference (ir_metal_size.py),
+    prompting you to take that reference (see --ir-reference);
   * writes ``scan_meta.json`` into each scan folder and appends one line per
     scan to ``<output>/batch_manifest.jsonl`` (label, params, status, files);
   * reconstructs each scan in a background process while the next one runs.
@@ -39,8 +42,34 @@ Usage (place next to sar_complete.py / sar_coordinator.py / sar_reconstruct.py):
     # Any sar_complete / sar_coordinator flag still works
     python sar_batch.py --count 10 --prefix knife -W 150 -H 150 --y-step 1
 
+    # IR: ask for a no-metal IR reference before every scan (default with --pause),
+    # once at the start (default without --pause), or reuse the dashboard's (keep)
+    python sar_batch.py --count 10 --view front --label metal --pause
+    python sar_batch.py --count 10 --view front --label metal --ir-reference keep
+    python sar_batch.py --count 10 --no-ir
+
 Then, once, start sar_scan_tcp.lua in mmWave Studio when the script says it is
 waiting for RADAR. Ctrl+C stops cleanly after shutting both clients down.
+
+IR files written into every scan folder (needs ir_metal_size.py next to this file):
+  ir_start.npz / ir_end.npz   raw thermal frames just before / just after the scan
+  ir_start.json / .png        metal measurement + annotated image (when a reference exists)
+  ir_end.json / .png
+  ir_reference.npz            the no-metal reference used (so it can be re-measured later)
+and an "ir" block in scan_meta.json / batch_manifest.jsonl.
+
+mmWave: reconstruction also saves sar_volume.npz (--save-npz) and, when it finishes,
+mmwave_metal_size.py measures the metal (mmwave_result.json / .png, "mmwave" block in
+scan_meta.json). Turn off with --no-mmwave-measure. Afterwards:
+  python mmwave_metal_size.py report outputs/          (IR + mmWave + combined verdict)
+
+Training data: after each scan's reconstruction, the scan is also exported to
+training_data/<paired|mmwave_only>/<view>_<metal|nometal>_training/<scan>/ (raw data, clean images
+without text, auto masks, label.json; see training_data/README.md). Metal yes/no comes from
+--metal or the label ('nometal' -> no). --object / --true-area-cm2 / --weapon-type are stored in the labels.
+--no-training turns it off.
+  python ir_metal_size.py report outputs/            (table of all scans)
+  python ir_metal_size.py report outputs/ --remeasure  (after changing levels/polarity)
 """
 
 import argparse
@@ -111,6 +140,35 @@ def build_parser():
                    help="Don't save RGB/IR snapshots from the Pi camera server")
     b.add_argument("--pi-camera-url", type=str, default=None,
                    help="Pi camera server base URL (default http://<pi-host>:9000)")
+
+    ir = parser.add_argument_group("IR metal size (thermal camera)")
+    ir.add_argument("--no-ir", action="store_true",
+                    help="Don't capture raw IR bursts or measure metal size")
+    ir.add_argument("--ir-reference", choices=["prompt", "once", "keep"], default=None,
+                    help="When to take the no-metal IR reference: 'prompt' = before every scan "
+                         "(default with --pause), 'once' = at the start of the batch (default "
+                         "otherwise), 'keep' = reuse the current one (e.g. set in the dashboard)")
+    ir.add_argument("--ir-seconds", type=float, default=2.0, metavar="SEC",
+                    help="Length of each IR burst (default 2)")
+    tr = parser.add_argument_group("training data (for the next team)")
+    tr.add_argument("--metal", choices=["yes", "no"], default=None,
+                    help="Whether metal is on the mannequin. If omitted it is inferred from the label "
+                         "('nometal', 'no_metal', 'empty' -> no; anything with 'metal' -> yes)")
+    tr.add_argument("--object", type=str, default="", help="Metal piece name, e.g. plateA (stored in labels)")
+    tr.add_argument("--weapon-type", choices=["gun", "knife", "other", "none"], default=None,
+                    help="Ground truth for training: gun (L panel), knife (long rectangle), other metal, none")
+    tr.add_argument("--true-area-cm2", type=float, default=None, help="Real area of the metal piece (cm^2), if known")
+    tr.add_argument("--training-dir", type=str,
+                    default=os.getenv("PEEKIR_TRAINING_DIR", str(REPO_ROOT / "training_data")),
+                    help="Training data folder (default ./training_data)")
+    tr.add_argument("--no-training", action="store_true", help="Don't export scans to the training folder")
+    tr.add_argument("--include-raw", action="store_true",
+                    help="Also copy the raw mmWave row files into the training sample (large: ~300 MB/scan)")
+    ir.add_argument("--no-mmwave-measure", action="store_true",
+                    help="Don't save sar_volume.npz / measure mmWave metal size after reconstruction")
+    ir.add_argument("--ir-state-dir", type=str,
+                    default=os.getenv("PEEKIR_METAL_STATE", str(REPO_ROOT / "ir_metal_state")),
+                    help="Reference/calibration folder, shared with the dashboard (default ./ir_metal_state)")
     return parser
 
 
@@ -417,19 +475,132 @@ def grab_snapshots(base_url, scan_dir, warned):
     return saved
 
 
+# ---------------------------------------------------------------------------
+# IR metal size (thermal)
+# ---------------------------------------------------------------------------
+def ir_setup(args):
+    """Return a MetalSizer, or None if IR is disabled/unavailable."""
+    if args.no_ir:
+        return None
+    try:
+        from ir_metal_size import MetalSizer
+    except ImportError as e:
+        log(f"IR disabled: can't import ir_metal_size ({e}). Put ir_metal_size.py next to "
+            "sar_batch.py and pip install numpy opencv-python httpx.")
+        return None
+    sizer = MetalSizer(args.ir_state_dir)
+    st = sizer.status()
+    s = st["settings"]
+    log(f"IR: state {args.ir_state_dir}; "
+        + (f"calibrated {s['cm_per_px']} cm/px" if s["cm_per_px"] else "NOT calibrated (sizes in px)")
+        + f"; LOW < {s['low_max_cm2']} <= MEDIUM < {s['high_min_cm2']} <= HIGH cm2; polarity {s['polarity']}")
+    return sizer
+
+
+def ir_take_reference(sizer, cam_url, args, allow_keep=True):
+    """Interactive: ask for the mannequin without metal, capture the reference."""
+    from ir_metal_size import fetch_burst
+    has_ref = sizer.status()["has_reference"]
+    while True:
+        hint = " (s = keep current reference)" if allow_keep and has_ref else ""
+        ans = input(f"\n>>> IR reference: remove ALL metal from the mannequin, then press Enter{hint}: ").strip().lower()
+        if ans == "s" and allow_keep and has_ref:
+            log("IR: keeping the current reference")
+            break
+        try:
+            frames, fmt = fetch_burst(cam_url, args.ir_seconds)
+            r = sizer.set_reference(frames, fmt)
+            log(f"IR reference saved ({r['n_frames']} frames, {fmt})"
+                + ("" if r["mannequin_found"] else "; no warm mannequin outline found (unheated? "
+                   "consider: python ir_metal_size.py levels --body-mask off)"))
+            break
+        except Exception as e:
+            ans = input(f"    IR reference failed: {e}\n    r = retry, s = skip IR reference: ").strip().lower()
+            if ans == "s":
+                break
+    input(">>> Now set up the object for this scan (attach the metal, if any), then press Enter: ")
+
+
+def ir_capture(sizer, cam_url, scan_dir, tag, args):
+    from ir_metal_size import capture_and_measure
+    r = capture_and_measure(sizer, cam_url, scan_dir, tag, args.ir_seconds)
+    if "error" in r:
+        log(f"IR {tag}: {r['error']}")
+    elif "measure_error" in r:
+        log(f"IR {tag}: saved {r['n_frames']} frames; not measured ({r['measure_error']})")
+    else:
+        size = (f"{r['largest_area_cm2']:.0f} cm2" if r["largest_area_cm2"] is not None
+                else f"{r['largest_area_px']} px")
+        log(f"IR {tag}: THREAT {r['level']} (largest {size}, {r['pieces']} piece(s))")
+        for note in r.get("notes") or []:
+            log(f"IR {tag} note: {note}")
+        progress(status="ir", tag=tag, level=r["level"], area_cm2=r["largest_area_cm2"])
+    return r
+
+
 def start_reconstruction(args, scan_dir):
     a = copy.copy(args)
     a.viz = "plotly" if args.reconstruct == "plotly" else "matplotlib"
     if a.viz == "plotly" and not a.viz_html_root:
         a.viz_html_root = str(REPO_ROOT / "visualizations")
-    argv = scomp.build_reconstruct_argv(a, scan_dir)
+    argv = list(scomp.build_reconstruct_argv(a, scan_dir))
+    if not a.no_mmwave_measure and "--save-npz" not in argv:
+        argv.append("--save-npz")      # raw volume for mmwave_metal_size.py (and later training)
     cmd = [sys.executable, "-X", "utf8", str(REPO_ROOT / "sar_reconstruct.py"), *argv[1:]]
     env = dict(os.environ, MPLBACKEND="Agg")  # never pop up a window
     logf = open(os.path.join(scan_dir, "reconstruct.log"), "w", encoding="utf-8")
     proc = subprocess.Popen(cmd, cwd=str(scan_dir), env=env, stdout=logf, stderr=subprocess.STDOUT)
     proc._logf = logf
     proc._scan = os.path.basename(scan_dir)
+    proc._dir = str(scan_dir)
+    proc._measure = not a.no_mmwave_measure
+    proc._state = getattr(a, "ir_state_dir", None)
+    proc._train = not a.no_training and not a.no_mmwave_measure
+    proc._train_root = a.training_dir
+    proc._include_raw = a.include_raw
     return proc
+
+
+def training_export(scan_dir, root, include_raw=False, state_dir=None):
+    try:
+        import training_export as tx
+    except ImportError as e:
+        log(f"training export skipped: can't import training_export ({e})")
+        return
+    try:
+        tx.export_scan(scan_dir, root, include_raw=include_raw, state_dir=state_dir,
+                       log=lambda m: log(m))
+    except Exception as e:
+        log(f"training export failed for {os.path.basename(scan_dir)}: {e}")
+
+
+def mmwave_measure(scan_dir, state_dir=None):
+    """Metal size / threat level from the reconstruction; adds an "mmwave" block to scan_meta.json."""
+    try:
+        import mmwave_metal_size as mms
+    except ImportError as e:
+        log(f"mmWave measurement skipped: can't import mmwave_metal_size ({e})")
+        return
+    try:
+        r = mms.measure_folder(scan_dir, state_dir=state_dir)
+    except Exception as e:
+        log(f"mmWave measurement failed for {os.path.basename(scan_dir)}: {e}")
+        return
+    log(f"mmWave {os.path.basename(scan_dir)}: THREAT {r.level} (largest {r.largest_area_cm2:.0f} cm2, "
+        f"{len(r.pieces)} piece(s))")
+    for n in r.notes:
+        log(f"mmWave note: {n}")
+    progress(status="mmwave", name=os.path.basename(scan_dir), level=r.level, area_cm2=r.largest_area_cm2)
+    meta_p = os.path.join(scan_dir, "scan_meta.json")
+    try:
+        with open(meta_p, encoding="utf-8") as f:
+            meta = json.load(f)
+        meta["mmwave"] = {"level": r.level, "largest_area_cm2": r.largest_area_cm2,
+                          "pieces": len(r.pieces), "result": "mmwave_result.json"}
+        with open(meta_p, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+    except OSError:
+        pass
 
 
 def reap(procs, block_until_below=None):
@@ -443,6 +614,10 @@ def reap(procs, block_until_below=None):
                 procs.remove(p)
                 if rc == 0:
                     log(f"Reconstruction done: {p._scan}")
+                    if getattr(p, "_measure", False):
+                        mmwave_measure(p._dir, getattr(p, "_state", None))
+                    if getattr(p, "_train", False):
+                        training_export(p._dir, p._train_root, p._include_raw, getattr(p, "_state", None))
                 else:
                     log(f"Reconstruction FAILED for {p._scan} (exit {rc}); see reconstruct.log")
                     failures.append(p._scan)
@@ -489,6 +664,12 @@ def main():
     log(f"Scan: {args.width} x {args.height} mm, {num_rows} rows, {num_frames} frames/row, "
         f"speed {args.speed} mm/s, snake={args.snake}")
     log(f"Output: {outputs_base}   manifest: {manifest.name}")
+    if not args.no_training:
+        if args.reconstruct == "none" or args.no_mmwave_measure:
+            log("training: scans are NOT exported automatically without reconstruction + --save-npz. Later run: "
+                "python mmwave_metal_size.py reconstruct-all outputs/ && python training_export.py export-all outputs/")
+        else:
+            log(f"training: exporting each scan to {args.training_dir} after its reconstruction")
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -498,6 +679,13 @@ def main():
 
     recon_procs, recon_failures = [], []
     snap_warned = set()
+    sizer = ir_setup(args)
+    ir_mode = args.ir_reference or ("prompt" if args.pause else "once")
+    if sizer is not None:
+        log(f"IR reference mode: {ir_mode}")
+        if ir_mode == "keep" and not sizer.status()["has_reference"]:
+            log("IR: no reference yet; raw IR is still saved per scan, but nothing is measured. "
+                "Set one in the dashboard, or use --ir-reference once/prompt.")
     label = args.label
     view = args.view
     done, attempts_total, idx = 0, 0, 0
@@ -505,6 +693,9 @@ def main():
     results = []
 
     try:
+        if sizer is not None and ir_mode == "once":
+            ir_take_reference(sizer, cam_url, args)
+
         # Radar first: this is the one that needs a human (once).
         clients.wait_for(["RADAR"], args.radar_wait)
         if args.skip_pi_ssh:
@@ -534,9 +725,26 @@ def main():
                 log(f"Waiting {args.delay:.0f}s before next scan")
                 time.sleep(args.delay)
 
+            if sizer is not None and ir_mode == "prompt":
+                ir_take_reference(sizer, cam_url, args)
+
             scan_base = group_dir(outputs_base, view, label)
             scan_base.mkdir(parents=True, exist_ok=True)
             name, idx = next_free_name(scan_prefix(args, view, label), 0, scan_base)
+
+            training_info = None
+            if not args.no_training:
+                try:
+                    import training_export as tx
+                    m = tx.infer_metal(label, tx.parse_yes_no(args.metal) if args.metal else None)
+                except ImportError:
+                    m = None
+                training_info = {"view": view, "metal": m, "object": args.object,
+                                 "true_area_cm2": args.true_area_cm2,
+                                 "weapon_type": args.weapon_type or ("none" if m is False else "")}
+                if m is None:
+                    log(f"training: can't tell metal / no metal from label '{label}'; this scan won't be "
+                        "exported (use --metal yes|no, or a label like 'metal' / 'nometal')")
 
             ok = False
             for attempt in range(1, args.retries + 2):
@@ -548,6 +756,7 @@ def main():
                 log(f"=== Scan {done + 1}/{args.count}: {name} (attempt {attempt}) ===")
                 error = None
                 snaps = {}
+                ir_info = None
                 missing, sizes = list(range(1, num_rows + 1)), {}
                 try:
                     clients.ensure_radar()
@@ -567,6 +776,9 @@ def main():
                     scan_dir.mkdir(parents=True, exist_ok=False)
                     if not args.no_snapshots:
                         snaps = grab_snapshots(cam_url, str(scan_dir), snap_warned)
+                    if sizer is not None:
+                        ir_info = {"reference": sizer.copy_reference_to(scan_dir),
+                                   "start": ir_capture(sizer, cam_url, scan_dir, "start", args)}
 
                     scan_args = copy.copy(args)
                     scan_args.output_dir = str(scan_dir)
@@ -575,6 +787,13 @@ def main():
                     sc.run_scan(clients.gantry, clients.radar, scan_args)
 
                     time.sleep(1.0)                  # let the DCA1000 finish the last file
+                    if ir_info is not None:
+                        ir_info["end"] = ir_capture(sizer, cam_url, scan_dir, "end", args)
+                        lv = (ir_info["start"].get("level"), ir_info["end"].get("level"))
+                        ir_info["changed_during_scan"] = bool(lv[0] and lv[1] and lv[0] != lv[1])
+                        if ir_info["changed_during_scan"]:
+                            log(f"IR: threat level changed during the scan ({lv[0]} -> {lv[1]}); "
+                                "did something move, or did the mannequin/metal warm up?")
                     missing, sizes = check_rows(str(scan_dir), num_rows)
                     if clients.radar.errors:
                         error = f"radar reported: {clients.radar.errors[0]}"
@@ -610,6 +829,8 @@ def main():
                     "row_bytes_min": min(sizes.values()) if sizes else 0,
                     "row_bytes_max": max(sizes.values()) if sizes else 0,
                     "snapshots": snaps,
+                    "ir": ir_info,
+                    "training": training_info,
                     "params": {
                         "width_mm": args.width, "height_mm": args.height,
                         "x_start_mm": args.x_start, "y_start_mm": args.y_start,

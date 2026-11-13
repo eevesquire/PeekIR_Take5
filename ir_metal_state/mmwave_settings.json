@@ -1,0 +1,13 @@
+{
+  "min_contrast": 4.0,
+  "rel_peak": 0.5,
+  "edge_frac": 0.5,
+  "global_edge_frac": 0.35,
+  "join_mm": 4.0,
+  "smooth_mm": 2.0,
+  "min_area_cm2": 2.0,
+  "depth_min_mm": null,
+  "depth_max_mm": null,
+  "low_max_cm2": null,
+  "high_min_cm2": null
+}

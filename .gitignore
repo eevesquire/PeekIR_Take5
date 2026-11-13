@@ -5,3 +5,21 @@ current_index.txt
 outputs/
 visualizations/
 *.bin
+training_data/
+*.npz
+# IR reference frames (setup-specific); the settings .json files ARE kept
+ir_metal_state/*.npz
+
+# Python / environments
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# model weights
+*.pt
+*.onnx
+weapon_detection/runs/
+
+# logs
+*.log
