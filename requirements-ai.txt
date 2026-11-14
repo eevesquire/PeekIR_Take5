@@ -1,0 +1,7 @@
+# Optional: AI metal / no-metal check on the dashboard's "Capture IR" button (ir_ai_metal.py).
+# CPU-only PyTorch is enough and much smaller than the default download:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements-ai.txt
+torch
+pillow>=10
+numpy>=1.26

@@ -23,6 +23,8 @@ import json
 import tty
 import termios
 import select
+import signal
+import atexit
 import socket as socket_module
 
 # Global event to signal threads to stop
@@ -76,6 +78,20 @@ try:
         reed_switches[name] = Button(pin, pull_up=True, bounce_time=0.01)
 except Exception:
     pass
+
+# Emergency stop button (GPIO 24, pressed = pin pulled low). Created here so every part of the
+# script can check it; the monitor thread (monitor_emergency_stop) still does the actual stopping.
+STOP_BUTTON_PIN = 24
+try:
+    estop_button = Button(STOP_BUTTON_PIN, pull_up=True, bounce_time=0.05)
+except Exception:
+    estop_button = None
+
+def estop_is_pressed():
+    try:
+        return bool(estop_button is not None and estop_button.is_pressed)
+    except Exception:
+        return False
 
 def get_triggered_limits():
     triggered = []
@@ -149,6 +165,26 @@ dirX = DigitalOutputDevice(DIR_PIN_X,
 pulY = HardwarePWM(pwm_channel=0, hz=f_y, chip=0)
 dirY = DigitalOutputDevice(DIR_PIN_Y, 
                            active_high=True)  # Active high to rotate CW
+
+
+# Hardware PWM keeps pulsing after the process dies unless it is stopped explicitly, so the
+# motors must be stopped on EVERY way out: normal exit, SIGTERM, and SIGHUP (the SSH session
+# closing, e.g. when the laptop's scan is cancelled).
+def _safe_stop_motors():
+    for pwm in (pulX, pulY):
+        try:
+            pwm.stop()
+        except Exception:
+            pass
+
+def _stop_and_exit(signum, frame):
+    _safe_stop_motors()
+    raise SystemExit(1)
+
+atexit.register(_safe_stop_motors)
+for _sig in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):
+    if _sig is not None:
+        signal.signal(_sig, _stop_and_exit)
 
 
 # Vector List (Raw 0-10000)
@@ -322,6 +358,9 @@ def _tcp_recv(sock, buf_holder):
 
 def _tcp_execute_move(sock, args_str):
     """Parse MOVE arguments and execute the movement, sending status over TCP."""
+    if estop_is_pressed():
+        _tcp_send(sock, "ERROR EMERGENCY STOP is pressed")
+        return
     tokens = args_str.split()
     directions = {}
     speed_val = None
@@ -372,33 +411,43 @@ def _tcp_execute_move(sock, args_str):
     timeX = abs(dx) / speedX_mm_per_s if dx != 0 else 0
     timeY = abs(dy) / speedY_mm_per_s if dy != 0 else 0
 
+    hit = False
     if timeX > 0 and timeY > 0:
         if timeX <= timeY:
-            sleep_with_limit_check(timeX, 'x', 1 if dx > 0 else -1)
+            hit |= sleep_with_limit_check(timeX, 'x', 1 if dx > 0 else -1)
             pulX.stop()
             if timeY - timeX > 0:
-                sleep_with_limit_check(timeY - timeX, 'y', 1 if dy > 0 else -1)
+                hit |= sleep_with_limit_check(timeY - timeX, 'y', 1 if dy > 0 else -1)
             pulY.stop()
         else:
-            sleep_with_limit_check(timeY, 'y', 1 if dy > 0 else -1)
+            hit |= sleep_with_limit_check(timeY, 'y', 1 if dy > 0 else -1)
             pulY.stop()
             if timeX - timeY > 0:
-                sleep_with_limit_check(timeX - timeY, 'x', 1 if dx > 0 else -1)
+                hit |= sleep_with_limit_check(timeX - timeY, 'x', 1 if dx > 0 else -1)
             pulX.stop()
     elif timeX > 0:
-        sleep_with_limit_check(timeX, 'x', 1 if dx > 0 else -1)
+        hit |= sleep_with_limit_check(timeX, 'x', 1 if dx > 0 else -1)
         pulX.stop()
     elif timeY > 0:
-        sleep_with_limit_check(timeY, 'y', 1 if dy > 0 else -1)
+        hit |= sleep_with_limit_check(timeY, 'y', 1 if dy > 0 else -1)
         pulY.stop()
 
+    if hit:
+        # A limit switch stopped the move early: the gantry is not where the scan expects it.
+        stopAllMotor()
+        _tcp_send(sock, f"ERROR limit switch hit ({', '.join(get_triggered_limits()) or 'limit'})")
+        return
     _tcp_send(sock, "MOVE_COMPLETE")
+
+_tcp_sock = None   # set in tcp_client_mode so the e-stop monitor can tell the coordinator
 
 def tcp_client_mode(host, port):
     """Connect to SAR coordinator and execute gantry movement commands."""
+    global _tcp_sock
     print(f"Connecting to coordinator at {host}:{port}...")
     s = socket_module.socket(socket_module.AF_INET, socket_module.SOCK_STREAM)
     s.connect((host, int(port)))
+    _tcp_sock = s
     print("Connected.")
 
     _tcp_send(s, "GANTRY")
@@ -444,25 +493,22 @@ def monitor_emergency_stop():
     Monitors the emergency stop button in a background thread.
     Stops all motors and exits the program immediately if pressed.
     """
-    # Emergency Stop Configuration
-    STOP_BUTTON_PIN = 24
-    DEBOUNCE = 0.05
-    
-    try:
-        stop_button = Button(STOP_BUTTON_PIN, pull_up=True, bounce_time=DEBOUNCE)
-    except Exception as e:
-        # print(f"Warning: Could not initialize E-Stop button on GPIO {STOP_BUTTON_PIN}: {e}")
+    if estop_button is None:
+        # print(f"Warning: Could not initialize E-Stop button on GPIO {STOP_BUTTON_PIN}")
         return
 
     while not shutdown_event.is_set():
-        if stop_button.is_pressed:
-            print("\n\n!!! EMERGENCY STOP TRIGGERED !!!")
-            print("Stopping all motors and exiting...")
-            stopAllMotor()
+        if estop_is_pressed():
+            stopAllMotor()   # motors first, before anything else
+            print("\n\n!!! EMERGENCY STOP TRIGGERED !!!", flush=True)
+            print("Stopping all motors and exiting...", flush=True)
+            if _tcp_sock is not None:   # tell the scan coordinator why the gantry is going away
+                try:
+                    _tcp_sock.sendall(b"ERROR EMERGENCY STOP\n")
+                except Exception:
+                    pass
             os._exit(1) # Force exit immediately
         sleep(0.05)
-    
-    stop_button.close()
 
 
 def save_position(currentX, currentY, coords=None, filename='position.txt'):
@@ -1399,6 +1445,13 @@ def main_logic():
         return
 
 def main():
+    # Refuse to start any movement while the emergency stop is pressed (e.g. the scan's
+    # 'move.py origin' homing). TCP mode still connects, and answers MOVE with an ERROR, so the
+    # scan coordinator ends the scan instead of waiting. 'stop' and '--position' are always allowed.
+    if estop_is_pressed() and not any(a in sys.argv for a in ("tcp", "stop", "--position")):
+        print("EMERGENCY STOP is pressed: not moving. Release it and run the command again.", flush=True)
+        sys.exit(2)
+
     # Start E-Stop Monitor
     estop_thread = threading.Thread(target=monitor_emergency_stop, daemon=True)
     estop_thread.start()

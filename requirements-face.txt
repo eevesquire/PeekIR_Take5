@@ -1,0 +1,5 @@
+# Optional: RGB face match (ArcFace via DeepFace). Pulls in TensorFlow (large).
+# TensorFlow has no wheels for Python 3.14 or 32-bit Python: use 64-bit Python 3.11-3.13.
+# Build the DB with facial_rec/build_poi_db.py -> facial_rec/demo_embedding.json
+deepface>=0.0.90
+ 

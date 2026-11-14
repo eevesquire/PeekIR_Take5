@@ -1,0 +1,1267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PeekIR Dashboard</title>
+  <style>
+    :root {
+      --bg: #0e1014;
+      --panel: #161a20;
+      --border: #2a3140;
+      --text: #e8eaef;
+      --muted: #8b93a3;
+      --accent: #4f8cff;
+      --danger: #e85d5d;
+      --ok: #3dcc7a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, Segoe UI, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }
+    h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin: 0 0 0.75rem 0;
+    }
+    section {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 1rem;
+      margin: 1rem;
+    }
+    .top-panels {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1rem;
+      margin: 1rem;
+      align-items: start;
+    }
+    .top-panels section {
+      margin: 0;
+      min-width: 0;
+    }
+    @media (max-width: 1100px) {
+      .top-panels {
+        grid-template-columns: 1fr;
+      }
+    }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem; }
+    input[type="text"], input[type="number"] {
+      width: 100%;
+      max-width: 280px;
+      padding: 0.45rem 0.5rem;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: #0b0d11;
+      color: var(--text);
+    }
+    button {
+      cursor: pointer;
+      padding: 0.5rem 1rem;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: #1e2430;
+      color: var(--text);
+      font-weight: 600;
+    }
+    button.primary { background: var(--accent); border-color: #3a6fd0; color: #fff; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .row { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; }
+    .progress-wrap { margin-top: 0.75rem; }
+    .bar {
+      height: 8px;
+      background: #0b0d11;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 0.35rem;
+    }
+    .bar > div {
+      height: 100%;
+      background: var(--accent);
+      width: 0%;
+      transition: width 0.2s;
+    }
+    #scanLog {
+      font-family: ui-monospace, monospace;
+      font-size: 0.75rem;
+      color: var(--muted);
+      max-height: 120px;
+      overflow: auto;
+      white-space: pre-wrap;
+      margin-top: 0.5rem;
+    }
+    #vizSection #vizFrameHost { display: none; }
+    #vizSection.viz-has-viewer #vizFrameHost {
+      display: block;
+      margin-top: 0.75rem;
+    }
+    .viz-frame-wrap {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      background: #000;
+    }
+    /* Legacy HTML without PEEKIR_VIZ_SIZE */
+    .viz-frame-wrap:not(.viz-sized) .viz-frame-scale-inner {
+      display: block;
+      width: 100%;
+    }
+    .viz-frame-wrap:not(.viz-sized) .viz-frame-scale-inner iframe {
+      width: 100%;
+      height: 70vh;
+      border: none;
+      display: block;
+    }
+    .viz-cam-row .viz-frame-wrap:not(.viz-sized) .viz-frame-scale-inner iframe {
+      height: min(55vh, 42vw);
+    }
+    /* Sized Plotly: fill mmWave column; --viz-scale set in JS = min(1, columnWidth / export width) */
+    .viz-cam-col--viz {
+      min-width: 0;
+      width: 100%;
+    }
+    .viz-frame-wrap.viz-sized {
+      position: relative;
+      min-height: 0;
+      width: 100%;
+      box-sizing: border-box;
+      aspect-ratio: var(--viz-ar-w, 1) / var(--viz-ar-h, 1);
+      overflow: hidden;
+    }
+    .viz-frame-wrap.viz-sized .viz-frame-scale-inner {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: calc(100% / var(--viz-scale, 1));
+      height: calc(100% / var(--viz-scale, 1));
+      transform: scale(var(--viz-scale, 1));
+      transform-origin: top left;
+    }
+    .viz-frame-wrap.viz-sized .viz-frame-scale-inner iframe {
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      border: none;
+      display: block;
+    }
+    select#vizSelect {
+      width: 100%;
+      max-width: 420px;
+      padding: 0.45rem 0.5rem;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: #0b0d11;
+      color: var(--text);
+    }
+    /* mmWave / RGB / IR: 40% / 30% / 30% on wide screens */
+    .viz-cam-row {
+      display: grid;
+      grid-template-columns: 4fr 3fr 3fr;
+      gap: 1rem;
+      align-items: start;
+      margin-top: 0.75rem;
+    }
+    @media (max-width: 1100px) {
+      .viz-cam-row {
+        grid-template-columns: 1fr;
+      }
+    }
+    .viz-panel {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.5rem;
+      background: #0b0d11;
+    }
+    .viz-panel h3 {
+      margin: 0 0 0.5rem 0;
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-transform: none;
+      letter-spacing: normal;
+    }
+    .viz-panel .row { width: 100%; }
+    .viz-panel select#vizSelect { max-width: 100%; }
+    .cam-box {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.5rem;
+      background: #0b0d11;
+    }
+    .cam-box h3 { margin: 0 0 0.5rem 0; font-size: 0.8rem; color: var(--muted); }
+    .cam-box .live {
+      width: 100%;
+      aspect-ratio: 4/3;
+      object-fit: contain;
+      background: #000;
+      display: block;
+      max-height: 360px;
+    }
+    .thumb { margin-top: 0.5rem; max-width: 100%; max-height: 200px; object-fit: contain; }
+    .face-match-result { margin-top: 0.5rem; width: 100%; }
+    .face-match-split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+      align-items: stretch;
+    }
+    .face-match-cap-wrap {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #000;
+      min-height: 100px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .face-match-cap-img {
+      max-width: 100%;
+      max-height: 220px;
+      object-fit: contain;
+      display: block;
+    }
+    .poi-match-stack {
+      position: relative;
+      min-height: 100px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #0b0d11;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .poi-match-img {
+      max-width: 100%;
+      max-height: 220px;
+      object-fit: contain;
+      display: block;
+    }
+    .poi-wanted-overlay {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      padding: 0.55rem 0.4rem;
+      background: linear-gradient(transparent, rgba(120, 0, 0, 0.92));
+      color: #fff;
+      font-weight: 800;
+      font-size: 0.8rem;
+      text-align: center;
+      letter-spacing: 0.02em;
+      display: none;
+      pointer-events: none;
+    }
+    .face-no-match-msg {
+      padding: 1.25rem 0.5rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.9rem;
+      width: 100%;
+    }
+    .poi-detail-panel {
+      margin-top: 0.65rem;
+      padding: 0.65rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #07090d;
+      font-size: 0.82rem;
+      line-height: 1.45;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .poi-detail-panel h4 {
+      margin: 0 0 0.45rem 0;
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #e8ecf1;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    .poi-detail-badge {
+      display: inline-block;
+      padding: 0.12rem 0.45rem;
+      border-radius: 4px;
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .poi-detail-badge--wanted {
+      background: rgba(232, 93, 93, 0.22);
+      color: #ff8a8a;
+      border: 1px solid rgba(232, 93, 93, 0.45);
+    }
+    .poi-detail-badge--clear {
+      background: rgba(120, 140, 160, 0.18);
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    .poi-detail-grid {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 0.25rem 0.65rem;
+      align-items: start;
+    }
+    .poi-detail-grid dt {
+      margin: 0;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.78rem;
+    }
+    .poi-detail-grid dd {
+      margin: 0;
+      color: #c9d0da;
+    }
+    .ir-detect-stack {
+      background: #0b0d11;
+      min-height: 120px;
+      padding: 0.75rem;
+    }
+    .ir-detect-msg {
+      width: 100%;
+      text-align: center;
+      font-size: 0.95rem;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .ir-detect-msg.detected { color: #ff6f6f; }
+    .ir-detect-msg.clear { color: var(--muted); }
+    .ir-detect-result-single .face-match-cap-wrap {
+      min-height: 180px;
+      padding: 0.4rem;
+    }
+    .ir-detect-result-single .face-match-cap-img {
+      max-height: 300px;
+      width: 100%;
+      object-fit: contain;
+    }
+    #rgbFacePanel.face-alert-flash {
+      animation: rgbFaceFlash 0.55s ease-in-out 3;
+    }
+    @keyframes rgbFaceFlash {
+      0%, 100% { box-shadow: none; }
+      50% { box-shadow: inset 0 0 0 3px var(--danger); background: rgba(232, 93, 93, 0.14); }
+    }
+    .metal-tools {
+      margin-top: 0.75rem;
+      padding-top: 0.6rem;
+      border-top: 1px solid var(--border);
+    }
+    .metal-tools h4 { margin: 0 0 0.4rem 0; font-size: 0.78rem; color: var(--muted); font-weight: 600; }
+    .metal-btns { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+    .metal-btns button { padding: 0.4rem 0.7rem; font-size: 0.82rem; }
+    .metal-status { margin-top: 0.4rem; font-size: 0.75rem; color: var(--muted); line-height: 1.4; }
+    .metal-status.warn { color: #f0b35a; }
+    .metal-result { margin-top: 0.5rem; }
+    .metal-headline { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.4rem; }
+    .metal-badge {
+      display: inline-block;
+      padding: 0.25rem 0.65rem;
+      border-radius: 4px;
+      font-weight: 800;
+      font-size: 0.85rem;
+      letter-spacing: 0.05em;
+      border: 1px solid var(--border);
+    }
+    .metal-badge.NONE { color: var(--muted); }
+    .metal-badge.LOW { color: var(--ok); border-color: rgba(61, 204, 122, 0.5); background: rgba(61, 204, 122, 0.12); }
+    .metal-badge.MEDIUM { color: #ffc14d; border-color: rgba(255, 193, 77, 0.5); background: rgba(255, 193, 77, 0.12); }
+    .metal-badge.HIGH { color: #ff7a7a; border-color: rgba(232, 93, 93, 0.6); background: rgba(232, 93, 93, 0.18); }
+    .metal-summary { font-size: 0.82rem; color: #c9d0da; }
+    .metal-notes { font-size: 0.72rem; color: #f0b35a; margin-top: 0.3rem; }
+    .train-box { margin-top: 0.7rem; padding-top: 0.55rem; border-top: 1px dashed var(--border); }
+    .train-box h4 { margin: 0 0 0.4rem 0; font-size: 0.78rem; color: var(--muted); font-weight: 600; }
+    .scan-opts { margin-top: 0.6rem; gap: 0.7rem; }
+    .scan-opts input[type=number] { width: 6.5rem; }
+    .scan-opts input[type=text] { width: 7.5rem; }
+    .scan-opts select { padding: 0.45rem 0.5rem; border-radius: 4px; border: 1px solid var(--border); background: #0b0d11; color: var(--text); }
+    .ir-ai-text { font-size: 0.85rem; font-weight: 700; margin: 0.35rem 0; }
+    .ir-ai-text.hit { color: #ff7a7a; }
+    .ir-ai-text.clear { color: var(--ok); }
+    .threat-box { margin-top: 0.8rem; padding-top: 0.6rem; border-top: 1px solid var(--border); }
+    .threat-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem; }
+    .threat-head h4 { margin: 0 0.4rem 0 0; font-size: 0.9rem; }
+    .threat-head select { flex: 1; min-width: 10rem; }
+    .threat-opt { font-size: 0.75rem; color: var(--muted); display: inline-flex; align-items: center; gap: 0.25rem; }
+    .threat-empty { margin-top: 0.5rem; font-size: 0.8rem; color: var(--muted); }
+    .threat-verdict { display: flex; align-items: center; gap: 0.55rem; margin: 0.6rem 0 0.5rem; flex-wrap: wrap; }
+    .threat-verdict-badge { font-weight: 800; font-size: 1.15rem; letter-spacing: 0.04em; padding: 0.2rem 0.7rem; border-radius: 6px; border: 2px solid var(--border); }
+    .threat-verdict-badge.CONFIRMED { color: #ff7a7a; border-color: rgba(232, 93, 93, 0.8); background: rgba(232, 93, 93, 0.2); }
+    .threat-verdict-badge.POSSIBLE { color: #ffc14d; border-color: rgba(255, 193, 77, 0.7); background: rgba(255, 193, 77, 0.14); }
+    .threat-verdict-badge.CLEAR { color: var(--ok); border-color: rgba(61, 204, 122, 0.6); background: rgba(61, 204, 122, 0.12); }
+    .threat-name { font-size: 0.8rem; color: var(--muted); }
+    .threat-headline { font-weight: 800; font-size: 1.05rem; color: #ff7a7a; margin: -0.15rem 0 0.5rem; letter-spacing: 0.03em; }
+    .weapon-tag { color: #ff7a7a; font-weight: 800; }
+    .threat-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+    .threat-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.45rem; min-width: 0; }
+    .threat-card-head { font-weight: 700; font-size: 0.85rem; display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.3rem; }
+    .threat-text { font-size: 0.78rem; margin-bottom: 0.35rem; min-height: 1.2em; white-space: pre-line; line-height: 1.45; }
+    .threat-card img { width: 100%; display: block; border-radius: 4px; }
+    .threat-card img:not([src]) { display: none; }
+    .train-fields { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+    .train-fields select, .train-fields input { background: #0b0d11; color: var(--text); border: 1px solid var(--border);
+                                                border-radius: 4px; padding: 0.3rem 0.4rem; font-size: 0.8rem; }
+    .train-fields input { width: 7rem; }
+    .train-status { margin-top: 0.35rem; font-size: 0.74rem; color: var(--muted); }
+    .metal-result img { width: 100%; max-height: 300px; object-fit: contain; display: block; background: #000;
+                        border: 1px solid var(--border); border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <div class="top-panels">
+    <section>
+      <h2>mmWave data collection</h2>
+      <div class="row">
+        <div>
+          <label>Width (mm)</label>
+          <input type="number" id="w" value="150" min="1" step="0.1">
+        </div>
+        <div>
+          <label>Height (mm)</label>
+          <input type="number" id="h" value="150" min="1" step="0.1">
+        </div>
+        <div>
+          <label for="scanName">Scan name</label>
+          <input type="text" id="scanName" name="scanName" autocomplete="off"
+            spellcheck="false" placeholder="scan_0" maxlength="120"
+            title="Letters, digits, underscore, hyphen; must start with a letter or digit">
+        </div>
+        <div>
+          <button class="primary" id="btnScan">Start scan</button>
+          <button id="btnCancel">Cancel</button>
+        </div>
+      </div>
+      <div class="row scan-opts" aria-label="Scan position, depth and labels">
+        <div><label for="optX">X start (mm)</label><input type="number" id="optX" min="0" step="1" placeholder="default"></div>
+        <div><label for="optY">Y start (mm)</label><input type="number" id="optY" min="0" step="1" placeholder="default"></div>
+        <div><label for="optYStep">Y step (mm)</label><input type="number" id="optYStep" min="0.1" step="0.1" placeholder="default"></div>
+        <div><label for="optZ0">Z start (mm)</label><input type="number" id="optZ0" min="1" step="1" placeholder="200"></div>
+        <div><label for="optZ1">Z end (mm)</label><input type="number" id="optZ1" min="1" step="1" placeholder="400"></div>
+      </div>
+      <div class="row scan-opts" aria-label="Labels for training data">
+        <div><label for="optView">View</label><input type="text" id="optView" list="optViewList" placeholder="front" maxlength="60"></div>
+        <div><label for="optLabel">Label</label><input type="text" id="optLabel" list="optLabelList" placeholder="metal" maxlength="60"></div>
+        <div><label for="optMetal">Metal?</label>
+          <select id="optMetal"><option value="">from label</option><option value="yes">yes</option><option value="no">no</option></select></div>
+        <div><label for="optWeapon" title="What is REALLY on the mannequin (saved as the training label)">Weapon type</label>
+          <select id="optWeapon"><option value="">not set</option><option value="gun">gun (L panel)</option><option value="knife">knife (long rect.)</option><option value="other">other metal</option><option value="none">none</option></select></div>
+        <div><label for="optObject">Object</label><input type="text" id="optObject" placeholder="plateA" maxlength="80"></div>
+        <div><label for="optArea">True cm² (opt.)</label><input type="number" id="optArea" min="0" step="0.1"></div>
+        <div><label class="threat-opt" title="Copy this scan into training_data/ when it finishes"><input type="checkbox" id="optTraining" checked> Save for training</label></div>
+        <datalist id="optViewList"><option value="front"><option value="side"></datalist>
+        <datalist id="optLabelList"><option value="metal"><option value="nometal"></datalist>
+      </div>
+      <div class="progress-wrap">
+        <div id="scanStatus">Idle</div>
+        <div class="bar"><div id="scanBar"></div></div>
+        <div id="scanLog"></div>
+      </div>
+    </section>
+  </div>
+
+  <section id="vizSection">
+    <h2>mmWave visualization &amp; cameras</h2>
+    <div class="viz-cam-row">
+      <div class="viz-cam-col viz-cam-col--viz">
+        <div class="viz-panel">
+          <h3>mmWave visualization</h3>
+          <div class="row">
+            <div style="flex:1;min-width:0">
+              <label for="vizSelect">Visualization file</label>
+              <select id="vizSelect" aria-label="Visualization HTML file">
+                <option value="">— Loading list —</option>
+              </select>
+            </div>
+            <div>
+              <button type="button" id="btnVizRefresh" title="Rescan folder">Refresh list</button>
+              <button class="primary" id="btnViz">Load</button>
+            </div>
+          </div>
+          <div id="vizFrameHost" class="viz-frame-wrap">
+            <div class="viz-frame-scale-inner">
+              <iframe id="vizFrame" title="SAR visualization"></iframe>
+            </div>
+          </div>
+          <div class="threat-box" id="threatBox" aria-label="Threat assessment">
+            <div class="threat-head">
+              <h4>Threat assessment</h4>
+              <select id="threatSelect" aria-label="Scan"><option value="">— Loading scans —</option></select>
+              <button type="button" id="btnThreatRefresh" title="Rescan the outputs folder">Refresh</button>
+              <label class="threat-opt" title="Draw the detected metal on the mmWave viewer"><input type="checkbox" id="threatOutlines" checked> Outlines on viewer</label>
+              <label class="threat-opt" title="Show each new scan as soon as its results appear"><input type="checkbox" id="threatAuto" checked> Auto-show new scans</label>
+            </div>
+            <div id="threatEmpty" class="threat-empty">Run a scan or pick one above.</div>
+            <div id="threatBody" style="display:none">
+              <div class="threat-verdict">
+                <span id="threatVerdict" class="threat-verdict-badge CLEAR">—</span>
+                <span id="threatLevel" class="metal-badge NONE">—</span>
+                <span id="threatName" class="threat-name"></span>
+              </div>
+              <div id="threatHeadline" class="threat-headline" style="display:none"></div>
+              <div class="threat-cards">
+                <div class="threat-card">
+                  <div class="threat-card-head">IR <span id="threatIrBadge" class="metal-badge NONE">—</span></div>
+                  <div id="threatIrText" class="threat-text"></div>
+                  <a id="threatIrLink" target="_blank" rel="noopener"><img id="threatIrImg" alt="IR image with metal outlined"></a>
+                </div>
+                <div class="threat-card">
+                  <div class="threat-card-head">mmWave <span id="threatMmBadge" class="metal-badge NONE">—</span></div>
+                  <div id="threatMmText" class="threat-text"></div>
+                  <a id="threatMmLink" target="_blank" rel="noopener"><img id="threatMmImg" alt="mmWave image with metal outlined"></a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="cam-box" id="rgbFacePanel">
+        <h3>RGB live</h3>
+        <img class="live" id="rgbLive" alt="RGB">
+        <button type="button" id="btnCapRgb">Capture RGB</button>
+        <div id="rgbFaceMatchResult" class="face-match-result" style="display:none" aria-live="polite">
+          <div class="face-match-split">
+            <div class="face-match-cap-wrap">
+              <img id="rgbCapAnnotated" class="face-match-cap-img" alt="Captured frame with face detection">
+            </div>
+            <div class="face-match-poi-col">
+              <div class="poi-match-stack">
+                <img id="rgbPoiImg" class="poi-match-img" alt="" style="display:none">
+                <div id="rgbPoiOverlay" class="poi-wanted-overlay">Wanted Person Matched</div>
+                <div id="rgbNoMatchMsg" class="face-no-match-msg" style="display:none">No Match Found</div>
+              </div>
+            </div>
+          </div>
+          <div id="rgbPoiDetail" class="poi-detail-panel" style="display:none" aria-live="polite">
+            <h4>
+              <span id="rgbPoiDetailTitle">Person record</span>
+              <span id="rgbPoiWantedBadge" class="poi-detail-badge poi-detail-badge--wanted" style="display:none"></span>
+            </h4>
+            <dl class="poi-detail-grid">
+              <dt>Full name</dt><dd id="rgbPoiFullName"></dd>
+              <dt>Age</dt><dd id="rgbPoiAge"></dd>
+              <dt>DOB</dt><dd id="rgbPoiDob"></dd>
+              <dt>Crime</dt><dd id="rgbPoiCrime"></dd>
+              <dt id="rgbPoiExtraLabel" style="display:none">Extra</dt>
+              <dd id="rgbPoiExtra" style="display:none"></dd>
+            </dl>
+          </div>
+        </div>
+      </div>
+      <div class="cam-box">
+        <h3>IR live</h3>
+        <img class="live" id="irLive" alt="IR">
+        <button type="button" id="btnCapIr" title="One IR frame through the AI metal / no-metal model (experimental; does not change the threat level)">Capture IR</button>
+        <div id="irDetectResult" class="face-match-result ir-detect-result-single" style="display:none" aria-live="polite">
+          <div id="irDetectText" class="ir-ai-text"></div>
+          <div class="face-match-cap-wrap">
+            <img id="irCap" class="face-match-cap-img" alt="IR frame with AI metal check">
+          </div>
+        </div>
+        <div class="metal-tools" aria-label="IR metal size and threat level">
+          <h4>Metal size / threat level</h4>
+          <div class="metal-btns">
+            <button type="button" id="btnMetalRef" title="Take this with NO metal on the mannequin">Set reference</button>
+            <button type="button" class="primary" id="btnMetalMeasure">Measure metal</button>
+            <button type="button" id="btnMetalCal" title="Put a metal plate of known size on the mannequin, then click">Calibrate…</button>
+            <button type="button" id="btnMetalDiag" title="Show how much each pixel changed vs the reference">Show difference</button>
+          </div>
+          <div id="metalStatus" class="metal-status">Loading…</div>
+          <div id="metalResult" class="metal-result" style="display:none" aria-live="polite">
+            <div class="metal-headline">
+              <span id="metalBadge" class="metal-badge NONE">—</span>
+              <span id="metalSummary" class="metal-summary"></span>
+            </div>
+            <img id="metalImg" alt="IR frame with detected metal outlined">
+            <div id="metalNotes" class="metal-notes"></div>
+          </div>
+          <div class="train-box" aria-label="IR training data">
+            <h4>Training data (IR only)</h4>
+            <div class="train-fields">
+              <select id="trView" aria-label="View"><option value="front">front</option><option value="side">side</option></select>
+              <select id="trMetal" aria-label="Metal"><option value="yes">metal</option><option value="no">no metal</option></select>
+              <input id="trObject" placeholder="object (plateA)" aria-label="Object">
+              <input id="trArea" placeholder="true cm² (opt.)" aria-label="True area in cm2">
+              <select id="trWeapon" aria-label="Weapon type (ground truth)" title="What is REALLY on the mannequin"><option value="">weapon: not set</option><option value="gun">gun (L panel)</option><option value="knife">knife (long rect.)</option><option value="other">other metal</option><option value="none">none</option></select>
+              <button type="button" id="btnTrainIr" title="Uses the current reference (no metal) + a new capture">Save IR training sample</button>
+            </div>
+            <div id="trainStatus" class="train-status"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    const piBase = () => window.__PI_BASE__ || '';
+
+    async function loadConfig() {
+      const r = await fetch('/api/config');
+      const j = await r.json();
+      window.__PI_BASE__ = j.pi_base_url || '';
+      const sn = document.getElementById('scanName');
+      if (sn && j.suggested_scan_name) {
+        sn.value = j.suggested_scan_name;
+      }
+    }
+
+    function setScanBar(pct) {
+      document.getElementById('scanBar').style.width = Math.min(100, Math.max(0, pct)) + '%';
+    }
+
+    const es = new EventSource('/api/scan/stream');
+    es.onmessage = (ev) => {
+      let d;
+      try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.progress) {
+        const p = d.progress;
+        if (p.phase === 'scan' && p.row != null && p.total) {
+          document.getElementById('scanStatus').textContent = 'Scanning row ' + p.row + ' / ' + p.total;
+          setScanBar((p.row / p.total) * 100);
+        } else if (p.phase === 'scan' && p.status === 'complete') {
+          document.getElementById('scanStatus').textContent = 'Scan complete';
+          setScanBar(100);
+        } else if (p.phase === 'reconstruct') {
+          document.getElementById('scanStatus').textContent =
+            p.status === 'start' ? 'Reconstructing…' :
+            p.status === 'complete' ? 'Reconstruction done' :
+            p.status === 'error' ? ('Reconstruction error: ' + (p.message || '')) : JSON.stringify(p);
+          if (p.status === 'start') setScanBar(100);
+        } else if (p.phase === 'ir') {
+          showScanIr(p);
+        }
+      }
+    };
+
+    // ---- extra scan settings (same as sar_batch.py: -x -y --y-step --zstart --zend, view/label) ----
+    const _SCAN_OPT_IDS = ['w', 'h', 'optX', 'optY', 'optYStep', 'optZ0', 'optZ1',
+                           'optView', 'optLabel', 'optMetal', 'optWeapon', 'optObject', 'optArea', 'optTraining'];
+    const _SCAN_OPT_DEFAULTS = { optX: '50', optY: '0', optYStep: '2', optZ0: '300', optZ1: '450' };
+    function scanOptions() {
+      const v = (id) => document.getElementById(id).value.trim();
+      return {
+        x_start_mm: v('optX'), y_start_mm: v('optY'), y_step_mm: v('optYStep'),
+        zstart_mm: v('optZ0'), zend_mm: v('optZ1'),
+        view: v('optView'), label: v('optLabel'), metal: v('optMetal'), weapon_type: v('optWeapon'),
+        object: v('optObject'), true_area_cm2: v('optArea'),
+        training: document.getElementById('optTraining').checked
+      };
+    }
+    function saveScanOptions() {
+      const o = {};
+      for (const id of _SCAN_OPT_IDS) {
+        const el = document.getElementById(id);
+        o[id] = el.type === 'checkbox' ? el.checked : el.value;
+      }
+      try { localStorage.setItem('peekirScanOpts', JSON.stringify(o)); } catch (e) { /* storage off */ }
+    }
+    (function restoreScanOptions() {
+      let o = null;
+      try { o = JSON.parse(localStorage.getItem('peekirScanOpts') || 'null'); } catch (e) { o = null; }
+      o = o || _SCAN_OPT_DEFAULTS;
+      for (const id of _SCAN_OPT_IDS) {
+        const el = document.getElementById(id);
+        if (!(id in o)) continue;
+        if (el.type === 'checkbox') el.checked = !!o[id]; else el.value = o[id];
+      }
+      for (const id of _SCAN_OPT_IDS) document.getElementById(id).addEventListener('change', saveScanOptions);
+    })();
+
+    document.getElementById('btnScan').onclick = async () => {
+      const w = parseFloat(document.getElementById('w').value);
+      const h = parseFloat(document.getElementById('h').value);
+      const scan_name = (document.getElementById('scanName').value || '').trim();
+      const r = await fetch('/api/scan/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(Object.assign({ width_mm: w, height_mm: h, scan_name: scan_name }, scanOptions()))
+      });
+      if (!r.ok) {
+        let msg = await r.text();
+        try {
+          const j = JSON.parse(msg);
+          if (j.detail !== undefined) {
+            msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
+          }
+        } catch (e) { /* keep raw */ }
+        alert(msg);
+        return;
+      }
+      document.getElementById('scanStatus').textContent = 'Starting…';
+      setScanBar(0);
+    };
+
+    document.getElementById('btnCancel').onclick = async () => {
+      await fetch('/api/scan/cancel', { method: 'POST' });
+      document.getElementById('scanStatus').textContent = 'Cancelled';
+    };
+
+    async function loadVizList() {
+      const sel = document.getElementById('vizSelect');
+      try {
+        const r = await fetch('/api/viz/list');
+        const data = await r.json();
+        const files = data.files || [];
+        sel.innerHTML = '';
+        const opt0 = document.createElement('option');
+        opt0.value = '';
+        opt0.textContent = files.length ? '— Select a file —' : '— No .html files in visualizations/ —';
+        sel.appendChild(opt0);
+        for (const f of files) {
+          const o = document.createElement('option');
+          o.value = f.name;
+          o.textContent = f.name;
+          sel.appendChild(o);
+        }
+      } catch (e) {
+        sel.innerHTML = '<option value="">— Failed to load list —</option>';
+        console.error(e);
+      }
+    }
+
+    function updateVizFit() {
+      const host = document.getElementById('vizFrameHost');
+      if (!host || !host.classList.contains('viz-sized')) return;
+      const raw = getComputedStyle(host).getPropertyValue('--viz-w').trim();
+      const exportW = parseFloat(raw) || 800;
+      const col = host.closest('.viz-cam-col--viz');
+      if (!col) return;
+      const cw = col.clientWidth;
+      if (cw <= 0) return;
+      const scale = Math.min(1, cw / exportW);
+      host.style.setProperty('--viz-scale', String(scale));
+    }
+
+    let _vizFitObserverAttached = false;
+    function ensureVizFitObserver() {
+      if (_vizFitObserverAttached) return;
+      const col = document.querySelector('.viz-cam-col--viz');
+      if (!col) return;
+      const ro = new ResizeObserver(() => updateVizFit());
+      ro.observe(col);
+      window.addEventListener('resize', updateVizFit);
+      _vizFitObserverAttached = true;
+    }
+
+    async function loadVizPayload(payload) {
+      const r = await fetch('/api/viz/load', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        alert(t || r.status);
+        return;
+      }
+      const j = await r.json();
+      document.getElementById('vizSection').classList.add('viz-has-viewer');
+      const host = document.getElementById('vizFrameHost');
+      const frame = document.getElementById('vizFrame');
+      host.classList.remove('viz-sized');
+      host.style.removeProperty('--viz-w');
+      host.style.removeProperty('--viz-ar-w');
+      host.style.removeProperty('--viz-ar-h');
+      host.style.removeProperty('--viz-scale');
+      if (j.width_px && j.height_px) {
+        host.classList.add('viz-sized');
+        host.style.setProperty('--viz-w', j.width_px + 'px');
+        host.style.setProperty('--viz-ar-w', String(j.width_px));
+        host.style.setProperty('--viz-ar-h', String(j.height_px));
+        ensureVizFitObserver();
+        requestAnimationFrame(() => {
+          updateVizFit();
+          requestAnimationFrame(updateVizFit);
+        });
+      }
+      frame.onload = () => updateVizFit();
+      frame.src = '/api/viz/document/' + j.doc_id + '?t=' + Date.now();
+    }
+
+    document.getElementById('btnViz').onclick = async () => {
+      const name = document.getElementById('vizSelect').value.trim();
+      if (!name) {
+        alert('Select a visualization file from the list.');
+        return;
+      }
+      await loadVizPayload({ file: name });
+    };
+
+    document.getElementById('btnVizRefresh').onclick = () => loadVizList();
+
+    loadVizList();
+
+    async function refreshCams() {
+      await loadConfig();
+      const b = piBase();
+      const rgb = b + '/api/camera/stream?' + Date.now();
+      const ir = b + '/api/ir/stream?' + Date.now();
+      console.log('[peekir_dashboard] Live MJPEG (browser -> Pi):', rgb, ir);
+      const rEl = document.getElementById('rgbLive');
+      const iEl = document.getElementById('irLive');
+      rEl.onerror = () => console.error('[peekir_dashboard] RGB stream failed to load:', rgb);
+      iEl.onerror = () => console.error('[peekir_dashboard] IR stream failed to load:', ir);
+      rEl.src = rgb;
+      iEl.src = ir;
+    }
+
+    function applyRgbPoiDetailUI(detail, embeddingName) {
+      const panel = document.getElementById('rgbPoiDetail');
+      const title = document.getElementById('rgbPoiDetailTitle');
+      const badge = document.getElementById('rgbPoiWantedBadge');
+      const overlay = document.getElementById('rgbPoiOverlay');
+      const xLabel = document.getElementById('rgbPoiExtraLabel');
+      const xDd = document.getElementById('rgbPoiExtra');
+      const fallback = embeddingName ? String(embeddingName) : '';
+      if (!detail) {
+        panel.style.display = 'none';
+        badge.style.display = 'none';
+        title.textContent = 'Person record';
+        overlay.textContent = fallback ? ('Match: ' + fallback) : 'POI match';
+        return;
+      }
+      panel.style.display = 'block';
+      title.textContent = detail.full_name || detail.name || 'Person record';
+      document.getElementById('rgbPoiFullName').textContent = detail.full_name || detail.name || '—';
+      document.getElementById('rgbPoiAge').textContent = (detail.age !== undefined && detail.age !== null)
+        ? String(detail.age) : '—';
+      document.getElementById('rgbPoiDob').textContent = (detail.dob !== undefined && detail.dob !== null)
+        ? String(detail.dob) : '—';
+      document.getElementById('rgbPoiCrime').textContent = (detail.crime !== undefined && detail.crime !== null)
+        ? String(detail.crime) : '—';
+      if (detail.extra_info) {
+        xLabel.style.display = '';
+        xDd.style.display = '';
+        xDd.textContent = String(detail.extra_info);
+      } else {
+        xLabel.style.display = 'none';
+        xDd.style.display = 'none';
+        xDd.textContent = '';
+      }
+      const want = !!detail.wanted;
+      badge.style.display = 'inline-block';
+      badge.textContent = want ? 'Wanted' : 'Not wanted';
+      badge.className = 'poi-detail-badge ' + (want ? 'poi-detail-badge--wanted' : 'poi-detail-badge--clear');
+      const disp = detail.full_name || detail.name || fallback || '';
+      overlay.textContent = want ? ('WANTED — ' + disp) : ('Identified — ' + disp);
+    }
+
+    document.getElementById('btnCapRgb').onclick = async () => {
+      const btn = document.getElementById('btnCapRgb');
+      const panel = document.getElementById('rgbFacePanel');
+      const resultEl = document.getElementById('rgbFaceMatchResult');
+      const capImg = document.getElementById('rgbCapAnnotated');
+      const poiImg = document.getElementById('rgbPoiImg');
+      const poiOv = document.getElementById('rgbPoiOverlay');
+      const noMatch = document.getElementById('rgbNoMatchMsg');
+      btn.disabled = true;
+      panel.classList.remove('face-alert-flash');
+      try {
+        const r = await fetch('/api/pi/rgb-face-match');
+        if (!r.ok) {
+          const t = await r.text();
+          alert(t || 'RGB capture / face match failed');
+          return;
+        }
+        const j = await r.json();
+        capImg.src = 'data:image/png;base64,' + j.annotated_image_b64;
+        resultEl.style.display = 'block';
+        if (j.matched) {
+          noMatch.style.display = 'none';
+          if (j.poi_image_b64) {
+            poiImg.src = 'data:image/jpeg;base64,' + j.poi_image_b64;
+            poiImg.style.display = 'block';
+          } else {
+            poiImg.style.display = 'none';
+          }
+          poiOv.style.display = 'block';
+          applyRgbPoiDetailUI(j.poi_detail || null, j.name);
+          panel.classList.add('face-alert-flash');
+          window.setTimeout(() => panel.classList.remove('face-alert-flash'), 2000);
+        } else {
+          poiImg.style.display = 'none';
+          poiImg.removeAttribute('src');
+          poiOv.style.display = 'none';
+          document.getElementById('rgbPoiDetail').style.display = 'none';
+          noMatch.style.display = 'block';
+        }
+      } finally {
+        btn.disabled = false;
+      }
+    };
+    document.getElementById('btnCapIr').onclick = async () => {
+      const btn = document.getElementById('btnCapIr');
+      const resultEl = document.getElementById('irDetectResult');
+      const img = document.getElementById('irCap');
+      btn.disabled = true;
+      resultEl.style.display = 'block';
+      try {
+        const r = await fetch('/api/pi/ir-detect');
+        if (!r.ok) {
+          const t = await r.text();
+          alert(t || 'IR detection failed');
+          return;
+        }
+        const j = await r.json();
+        img.src = 'data:image/png;base64,' + j.annotated_image_b64;
+        const t = document.getElementById('irDetectText');
+        t.textContent = j.summary || '';
+        t.className = 'ir-ai-text ' + ((j.metal_detected || j.gun_detected) ? 'hit' : 'clear');
+      } finally {
+        btn.disabled = false;
+      }
+    };
+
+    // ---------------- IR metal size / threat level
+    async function metalApi(method, url, body) {
+      const r = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body)
+      });
+      const txt = await r.text();
+      let j = {};
+      try { j = JSON.parse(txt); } catch (e) { /* not json */ }
+      if (!r.ok) {
+        const d = j.detail !== undefined ? (typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)) : txt;
+        throw new Error(d || ('HTTP ' + r.status));
+      }
+      return j;
+    }
+
+    function fmtAge(s) {
+      if (s === null || s === undefined) return '';
+      if (s < 90) return Math.round(s) + ' s';
+      if (s < 5400) return Math.round(s / 60) + ' min';
+      return (s / 3600).toFixed(1) + ' h';
+    }
+
+    async function refreshMetalStatus(msg) {
+      const el = document.getElementById('metalStatus');
+      try {
+        const st = await metalApi('GET', '/api/ir/metal/status');
+        const s = st.settings;
+        const parts = [];
+        if (st.has_reference) {
+          parts.push('Reference: ' + fmtAge(st.reference_age_s) + ' old');
+        } else {
+          parts.push('No reference yet: remove all metal, then click Set reference');
+        }
+        parts.push(s.cm_per_px ? ('Calibrated ' + s.cm_per_px.toFixed(2) + ' cm/px') : 'Not calibrated (sizes in px)');
+        parts.push('LOW < ' + s.low_max_cm2 + ' cm² ≤ MEDIUM < ' + s.high_min_cm2 + ' cm² ≤ HIGH');
+        el.textContent = (msg ? msg + ' · ' : '') + parts.join(' · ');
+        el.className = 'metal-status' + ((!st.has_reference || (st.reference_age_s || 0) > 600) ? ' warn' : '');
+      } catch (e) {
+        el.textContent = 'Metal sizing unavailable: ' + e.message;
+        el.className = 'metal-status warn';
+      }
+    }
+
+    async function withBusy(btnId, label, fn) {
+      const ids = ['btnMetalRef', 'btnMetalMeasure', 'btnMetalCal', 'btnMetalDiag'];
+      ids.forEach(i => document.getElementById(i).disabled = true);
+      const el = document.getElementById('metalStatus');
+      el.textContent = label;
+      el.className = 'metal-status';
+      try { await fn(); }
+      catch (e) { el.textContent = e.message; el.className = 'metal-status warn'; return; }
+      finally { ids.forEach(i => document.getElementById(i).disabled = false); }
+    }
+
+    document.getElementById('btnMetalRef').onclick = () => withBusy('btnMetalRef', 'Capturing reference…', async () => {
+      const r = await metalApi('POST', '/api/ir/metal/reference', {});
+      document.getElementById('metalResult').style.display = 'none';
+      await refreshMetalStatus(r.mannequin_found ? 'Reference saved' :
+        'Reference saved, but no warm mannequin outline found (warm it up for best results)');
+    });
+
+    document.getElementById('btnMetalCal').onclick = async () => {
+      const s = prompt('Size of the metal plate now on the mannequin, in cm (width x height), e.g. 10x15');
+      if (!s) return;
+      const nums = s.toLowerCase().replace('×', 'x').replace('*', 'x').split('x').map(v => parseFloat(v));
+      if (nums.length !== 2 || nums.some(v => !(v > 0))) { alert('Enter it like 10x15'); return; }
+      await withBusy('btnMetalCal', 'Calibrating…', async () => {
+        const r = await metalApi('POST', '/api/ir/metal/calibrate', { width_cm: nums[0], height_cm: nums[1] });
+        await refreshMetalStatus('Calibrated: plate = ' + r.plate_area_px + ' px' +
+          (r.other_blobs ? (' (warning: ' + r.other_blobs + ' other change(s) seen)') : ''));
+      });
+    };
+
+    document.getElementById('btnMetalMeasure').onclick = () => withBusy('btnMetalMeasure', 'Measuring…', async () => {
+      const r = await metalApi('POST', '/api/ir/metal/measure', {});
+      const badge = document.getElementById('metalBadge');
+      badge.textContent = r.level;
+      badge.className = 'metal-badge ' + r.level;
+      let summary;
+      if (!r.blobs.length) {
+        summary = 'No metal detected';
+      } else {
+        const unit = r.calibrated ? ' cm²' : ' px';
+        const big = r.calibrated ? r.largest_area_cm2 : r.largest_area_px;
+        summary = 'Largest piece ' + Math.round(big) + unit + ' · ' + r.blobs.length + ' piece' + (r.blobs.length > 1 ? 's' : '');
+        const b0 = r.blobs[0];
+        if (b0.size_cm) summary += ' · ~' + b0.size_cm[0] + ' × ' + b0.size_cm[1] + ' cm';
+        if (r.weapons && r.weapons.length) summary = r.weapons.map(w => w.toUpperCase()).join(' + ') + ' · ' + summary;
+        else if (b0.shape) summary = 'suspicious object · ' + summary;
+      }
+      document.getElementById('metalSummary').textContent = summary;
+      document.getElementById('metalImg').src = 'data:image/png;base64,' + r.annotated_image_b64;
+      document.getElementById('metalNotes').textContent = (r.notes || []).join(' · ');
+      document.getElementById('metalResult').style.display = 'block';
+      await refreshMetalStatus();
+    });
+
+    document.getElementById('btnMetalDiag').onclick = () => withBusy('btnMetalDiag', 'Comparing with reference…', async () => {
+      const r = await metalApi('POST', '/api/ir/metal/diagnose', {});
+      const badge = document.getElementById('metalBadge');
+      badge.textContent = 'DIFF';
+      badge.className = 'metal-badge NONE';
+      document.getElementById('metalSummary').textContent =
+        'Blue = colder than reference, red = warmer; black outline = what is detected now';
+      document.getElementById('metalImg').src = 'data:image/png;base64,' + r.image_b64;
+      document.getElementById('metalNotes').textContent = (r.advice || []).join('  ·  ');
+      document.getElementById('metalResult').style.display = 'block';
+      await refreshMetalStatus();
+    });
+
+    function fmtCounts(c) {
+      const parts = [];
+      for (const [sec, classes] of Object.entries(c || {})) {
+        const n = Object.values(classes).reduce((a, b) => a + b, 0);
+        if (n) parts.push(sec + ' ' + n);
+      }
+      return parts.length ? parts.join(' · ') : 'no samples yet';
+    }
+    async function refreshTraining(msg) {
+      const el = document.getElementById('trainStatus');
+      try {
+        const r = await metalApi('GET', '/api/training/summary');
+        el.textContent = (msg ? msg + ' · ' : '') + 'Saved so far: ' + fmtCounts(r.counts);
+      } catch (e) { el.textContent = 'Training export unavailable: ' + e.message; }
+    }
+    document.getElementById('btnTrainIr').onclick = async () => {
+      const btn = document.getElementById('btnTrainIr');
+      const el = document.getElementById('trainStatus');
+      btn.disabled = true; el.textContent = 'Capturing…';
+      try {
+        const r = await metalApi('POST', '/api/training/ir-sample', {
+          view: document.getElementById('trView').value,
+          metal: document.getElementById('trMetal').value,
+          object: document.getElementById('trObject').value,
+          true_area_cm2: document.getElementById('trArea').value,
+          weapon_type: document.getElementById('trWeapon').value
+        });
+        await refreshTraining('Saved ' + r.saved);
+      } catch (e) { el.textContent = e.message; }
+      finally { btn.disabled = false; }
+    };
+    refreshTraining();
+
+    // IR captured automatically at the start/end of a dashboard scan
+    function showScanIr(p) {
+      const when = (p.tag === 'end' ? 'after' : 'before') + ' scan ' + (p.scan_name || '');
+      const badge = document.getElementById('metalBadge');
+      const sum = document.getElementById('metalSummary');
+      const notes = document.getElementById('metalNotes');
+      const img = document.getElementById('metalImg');
+      document.getElementById('metalResult').style.display = 'block';
+      if (!p.level) {
+        badge.textContent = 'IR';
+        badge.className = 'metal-badge NONE';
+        sum.textContent = 'IR ' + when + ': ' + (p.error || 'not measured');
+        notes.textContent = (p.error && p.error.indexOf('no reference') >= 0)
+          ? 'Raw IR was saved with the scan. Click "Set reference" (no metal) before the next scan to get a threat level.' : '';
+        img.removeAttribute('src');
+        return;
+      }
+      badge.textContent = p.level;
+      badge.className = 'metal-badge ' + p.level;
+      let s = 'IR ' + when + ': ';
+      if (!p.pieces) {
+        s += 'no metal detected';
+      } else {
+        const big = p.calibrated ? (Math.round(p.largest_area_cm2) + ' cm²') : (p.largest_area_px + ' px');
+        s += 'largest piece ' + big + ' · ' + p.pieces + ' piece' + (p.pieces > 1 ? 's' : '');
+        if (p.weapons && p.weapons.length) s += ' · ' + p.weapons.map(w => w.toUpperCase()).join(' + ');
+      }
+      sum.textContent = s;
+      notes.textContent = (p.notes || []).join(' · ');
+      if (p.image) {
+        img.src = '/api/ir/metal/scan-image?scan_name=' + encodeURIComponent(p.scan_name) +
+          '&tag=' + encodeURIComponent(p.tag) + '&t=' + Date.now();
+      }
+    }
+
+    // ---- Threat assessment (IR + mmWave + combined verdict) ----
+    let _threatShown = null;
+    let _threatNewest = null;
+    let _vizDocId = null;
+
+    function _threatText(part, isIr) {
+      if (!part) return 'no IR capture for this scan';
+      if (!part.level) return part.note || 'not measured';
+      // Three short lines: objects + sizes / threat from size / weapon found (+ raised level).
+      // The detector's technical notes are only in the tooltip (hover) and the saved result files.
+      if (!part.pieces) return 'No metal detected\nThreat from size: NONE\nNo gun or knife';
+      const sizeOf = (o) => (isIr && !part.calibrated) ? (o.area_px + ' px') : (Math.round(o.area_cm2) + ' cm²');
+      let objs;
+      if (part.objects && part.objects.length) {
+        objs = part.objects.map(o => (o.weapon ? o.weapon.toUpperCase() : o.display) + (o.uncertain ? '?' : '')
+          + ' ' + sizeOf(o)).join(' · ');
+      } else {
+        objs = 'largest ' + sizeOf({ area_px: part.largest_area_px, area_cm2: part.largest_area_cm2 })
+          + ' · ' + part.pieces + ' piece' + (part.pieces > 1 ? 's' : '');
+      }
+      const sizeLevel = part.size_level || part.level;
+      const w = part.weapons || [];
+      const weap = !w.length ? 'No gun or knife'
+        : (w.map(x => x[0].toUpperCase() + x.slice(1)).join(' + ') + ' found'
+           + (part.level !== sizeLevel ? (' → raised to ' + part.level) : ''));
+      return objs + '\nThreat from size: ' + sizeLevel + '\n' + weap;
+    }
+
+    function _threatNotes(part) {
+      return (part && part.notes && part.notes.length) ? ('Details: ' + part.notes.join(' · ')) : '';
+    }
+
+    function _setBadge(el, level) {
+      el.textContent = level || '—';
+      el.className = 'metal-badge ' + (['LOW', 'MEDIUM', 'HIGH'].includes(level) ? level : 'NONE');
+    }
+
+    function showThreat(s) {
+      if (!s || !s.found) {
+        if (s && s.name) {
+          document.getElementById('threatEmpty').textContent =
+            'No IR or mmWave results found for "' + s.name + '"' + (s.error ? (': ' + s.error) : '.');
+          document.getElementById('threatEmpty').style.display = 'block';
+          document.getElementById('threatBody').style.display = 'none';
+        }
+        return;
+      }
+      _threatShown = s.name;
+      document.getElementById('threatEmpty').style.display = 'none';
+      document.getElementById('threatBody').style.display = 'block';
+      const v = document.getElementById('threatVerdict');
+      v.textContent = s.verdict;
+      v.className = 'threat-verdict-badge ' + (['CONFIRMED', 'POSSIBLE', 'CLEAR'].includes(s.verdict) ? s.verdict : 'NA');
+      _setBadge(document.getElementById('threatLevel'), s.level);
+      document.getElementById('threatName').textContent = s.name;
+      const hl = document.getElementById('threatHeadline');
+      hl.textContent = s.headline || '';
+      hl.style.display = s.headline ? 'block' : 'none';
+      _setBadge(document.getElementById('threatIrBadge'), s.ir && s.ir.level);
+      _setBadge(document.getElementById('threatMmBadge'), s.mmwave && s.mmwave.level);
+      document.getElementById('threatIrText').textContent = _threatText(s.ir, true);
+      document.getElementById('threatMmText').textContent = _threatText(s.mmwave, false);
+      document.getElementById('threatIrText').title = _threatNotes(s.ir);
+      document.getElementById('threatMmText').title = _threatNotes(s.mmwave);
+      const t = '&t=' + Date.now();
+      const q = encodeURIComponent(s.name);
+      for (const [kind, has, imgId, linkId] of [
+        ['ir', s.ir && s.ir.image, 'threatIrImg', 'threatIrLink'],
+        ['mmwave', s.mmwave && s.mmwave.image, 'threatMmImg', 'threatMmLink']]) {
+        const img = document.getElementById(imgId), a = document.getElementById(linkId);
+        if (has) {
+          const url = '/api/threat/image?name=' + q + '&kind=' + kind + t;
+          img.src = url; a.href = url;
+        } else { img.removeAttribute('src'); a.removeAttribute('href'); }
+      }
+      const sel = document.getElementById('threatSelect');
+      if ([...sel.options].some(o => o.value === s.name)) sel.value = s.name;
+    }
+
+    async function loadThreat(name) {
+      if (!name) return;
+      try {
+        const r = await fetch('/api/threat/scan?name=' + encodeURIComponent(name));
+        showThreat(await r.json());
+      } catch (e) { console.error(e); }
+    }
+
+    async function refreshThreatList(autoShow) {
+      const sel = document.getElementById('threatSelect');
+      try {
+        const r = await fetch('/api/threat/scans');
+        const scans = (await r.json()).scans || [];
+        const keep = sel.value || _threatShown;
+        sel.innerHTML = '';
+        const o0 = document.createElement('option');
+        o0.value = ''; o0.textContent = scans.length ? '— Pick a scan —' : '— No scans with results yet —';
+        sel.appendChild(o0);
+        for (const sc of scans) {
+          const o = document.createElement('option');
+          o.value = sc.name; o.textContent = sc.name;
+          sel.appendChild(o);
+        }
+        if (keep && scans.some(sc => sc.name === keep)) sel.value = keep;
+        const newest = scans.length ? (scans[0].name + '@' + scans[0].mtime) : null;
+        if (autoShow && newest && _threatNewest !== null && newest !== _threatNewest &&
+            document.getElementById('threatAuto').checked) {
+          loadThreat(scans[0].name);
+        }
+        _threatNewest = newest;
+      } catch (e) { console.error(e); }
+    }
+
+    document.getElementById('threatSelect').onchange = (e) => loadThreat(e.target.value);
+    document.getElementById('btnThreatRefresh').onclick = () => {
+      refreshThreatList(false).then(() => loadThreat(document.getElementById('threatSelect').value));
+    };
+    // scans run with sar_batch.py (outside the dashboard) show up through this check
+    setInterval(() => refreshThreatList(true), 8000);
+    refreshThreatList(false);
+
+    // dashboard scans: result pushed when the scan finishes
+    es.addEventListener('message', (ev) => {
+      let d;
+      try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.progress && d.progress.phase === 'scan' && d.progress.status === 'aborted') {
+        const p = d.progress;
+        document.getElementById('scanStatus').textContent = p.reason === 'gantry_stopped'
+          ? 'GANTRY STOPPED (emergency stop?): scan ended, no further movement'
+          : ('Scan stopped: ' + (p.message || p.reason || 'error') + ' (no homing or reconstruction)');
+      }
+      if (d.progress && d.progress.phase === 'threat') {
+        refreshThreatList(false);
+        if (document.getElementById('threatAuto').checked) showThreat(d.progress);
+      }
+    });
+
+    // loaded mmWave viewer: show its scan's threat result and draw the outlines on it
+    function _vizSrc(docId) {
+      const ov = document.getElementById('threatOutlines').checked;
+      return '/api/viz/' + (ov ? 'document-overlay/' : 'document/') + docId + '?t=' + Date.now();
+    }
+    const _origLoadVizPayload = loadVizPayload;
+    loadVizPayload = async function (payload) {
+      await _origLoadVizPayload(payload);
+      const frame = document.getElementById('vizFrame');
+      const m = (frame.getAttribute('src') || '').match(new RegExp('/api/viz/document/([0-9a-f]+)'));
+      if (!m) return;
+      _vizDocId = m[1];
+      if (document.getElementById('threatOutlines').checked) frame.src = _vizSrc(_vizDocId);
+      try {
+        const r = await fetch('/api/threat/for-viz/' + _vizDocId);
+        showThreat(await r.json());
+      } catch (e) { console.error(e); }
+    };
+    document.getElementById('threatOutlines').onchange = () => {
+      if (_vizDocId) document.getElementById('vizFrame').src = _vizSrc(_vizDocId);
+    };
+
+    refreshMetalStatus();
+
+    loadConfig().then(refreshCams);
+  </script>
+</body>
+</html>

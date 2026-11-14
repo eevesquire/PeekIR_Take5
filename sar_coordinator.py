@@ -84,6 +84,23 @@ class ClientConnection:
             pass
 
 
+class ScanAborted(RuntimeError):
+    """The scan stopped part-way (radar or gantry problem). Callers must not treat it as complete."""
+
+
+class GantryStopped(ScanAborted):
+    """The gantry stopped, failed or disconnected (e.g. EMERGENCY STOP pressed).
+    Callers must not send any further movement (no homing, no retries)."""
+
+
+def _gantry_expect(gantry, expected, timeout):
+    """gantry.expect(), but any failure is reported as GantryStopped."""
+    try:
+        return gantry.expect(expected, timeout=timeout)
+    except Exception as e:
+        raise GantryStopped(f"gantry stopped or failed while waiting for {expected}: {e}") from e
+
+
 # ---------------------------------------------------------------------------
 # Connection acceptance
 # ---------------------------------------------------------------------------
@@ -232,8 +249,8 @@ def run_scan(gantry, radar, args):
         if y_start > 0:
             parts.append(f"up={y_start}mm")
         gantry.send(f"MOVE {' '.join(parts)} speed={speed}mms")
-        gantry.expect("MOTOR_STARTED", timeout=30)
-        gantry.expect("MOVE_COMPLETE", timeout=120)
+        _gantry_expect(gantry, "MOTOR_STARTED", 30)
+        _gantry_expect(gantry, "MOVE_COMPLETE", 120)
         print("      At start position.\n")
     else:
         print("[2/4] Start at current position.\n")
@@ -262,14 +279,14 @@ def run_scan(gantry, radar, args):
         resp = radar.recv(timeout=30)
         if resp != "ARMED":
             print(f"  ARM failed: {resp}")
-            return
+            raise ScanAborted(f"ARM failed on row {row}: {resp}")
 
         # Start gantry scan movement (snake: odd rows →, even rows ←)
         if scan_right:
             gantry.send(f"MOVE right={width}mm speed={speed}mms")
         else:
             gantry.send(f"MOVE left={width}mm speed={speed}mms")
-        gantry.expect("MOTOR_STARTED", timeout=30)
+        _gantry_expect(gantry, "MOTOR_STARTED", 30)
 
         # Wait for motor to reach constant speed
         if stabilization_ms > 0:
@@ -297,14 +314,16 @@ def run_scan(gantry, radar, args):
 
         if errors:
             print(f"  ERRORS: {errors}")
-            return
+            if any(e.startswith(gantry.name) for e in errors):
+                raise GantryStopped(f"row {row}: {errors}")
+            raise ScanAborted(f"row {row}: {errors}")
 
         if results.get("gantry") != "MOVE_COMPLETE":
             print(f"  Gantry unexpected: {results.get('gantry')}")
-            return
+            raise GantryStopped(f"row {row}: gantry sent {results.get('gantry')!r} instead of MOVE_COMPLETE")
         if results.get("radar") != "CAPTURE_DONE":
             print(f"  Radar unexpected: {results.get('radar')}")
-            return
+            raise ScanAborted(f"row {row}: radar sent {results.get('radar')!r} instead of CAPTURE_DONE")
 
         # Without a long return move (~s), the next ARM can arrive before the DCA1000
         # finishes writing the previous row — files may be missing or size 0 (--snake).
@@ -314,18 +333,18 @@ def run_scan(gantry, radar, args):
         if not snake:
             # Return gantry to start X, then step to next row
             gantry.send(f"MOVE left={width}mm speed={return_speed}mms")
-            gantry.expect("MOTOR_STARTED", timeout=30)
-            gantry.expect("MOVE_COMPLETE", timeout=120)
+            _gantry_expect(gantry, "MOTOR_STARTED", 30)
+            _gantry_expect(gantry, "MOVE_COMPLETE", 120)
             if row < num_rows and y_step > 0:
                 gantry.send(f"MOVE up={y_step:.2f}mm speed={speed}mms")
-                gantry.expect("MOTOR_STARTED", timeout=30)
-                gantry.expect("MOVE_COMPLETE", timeout=120)
+                _gantry_expect(gantry, "MOTOR_STARTED", 30)
+                _gantry_expect(gantry, "MOVE_COMPLETE", 120)
         else:
             # Stay at the far X of this row; only step up (saves return travel per row)
             if row < num_rows and y_step > 0:
                 gantry.send(f"MOVE up={y_step:.2f}mm speed={speed}mms")
-                gantry.expect("MOTOR_STARTED", timeout=30)
-                gantry.expect("MOVE_COMPLETE", timeout=120)
+                _gantry_expect(gantry, "MOTOR_STARTED", 30)
+                _gantry_expect(gantry, "MOVE_COMPLETE", 120)
 
         elapsed = time.time() - row_start
         print(f"  Row {row} done ({elapsed:.1f}s)\n")
@@ -448,6 +467,10 @@ def main():
         run_scan(gantry, radar, args)
     except KeyboardInterrupt:
         print("\n\nScan interrupted.")
+    except GantryStopped as e:
+        print(f"\nGANTRY STOPPED (emergency stop?): {e}\nScan ended; no further movement.")
+    except ScanAborted as e:
+        print(f"\nScan aborted: {e}")
     except Exception as e:
         print(f"\nError: {e}")
         import traceback

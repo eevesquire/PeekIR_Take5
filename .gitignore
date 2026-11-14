@@ -23,3 +23,5 @@ weapon_detection/runs/
 
 # logs
 *.log
+
+threat_report*.csv

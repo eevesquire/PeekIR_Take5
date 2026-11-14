@@ -336,6 +336,7 @@ def run_capture(args):
             pi_home_gantry(args)
         except Exception as e:
             print(f"Homing failed: {e}")
+            _progress(phase="scan", status="aborted", reason="homing_failed", message=str(e))
             return None
 
     # 1b. Gantry is out of the way: dashboard IR snapshot (only with --ir-sync-file).
@@ -376,10 +377,18 @@ def run_capture(args):
         scan_ok = True
     except KeyboardInterrupt:
         print("\n\nScan interrupted.")
+    except getattr(sc, "GantryStopped", ()) as e:
+        print(f"\nGANTRY STOPPED (emergency stop?): {e}")
+        print("Scan ended. No homing, no reconstruction, no further movement.")
+        _progress(phase="scan", status="aborted", reason="gantry_stopped", message=str(e))
+    except getattr(sc, "ScanAborted", ()) as e:
+        print(f"\nScan aborted: {e}")
+        _progress(phase="scan", status="aborted", reason="scan_failed", message=str(e))
     except Exception as e:
         print(f"\nError: {e}")
         import traceback
         traceback.print_exc()
+        _progress(phase="scan", status="aborted", reason="error", message=str(e))
     finally:
         for client in (gantry, radar):
             if client:
@@ -473,8 +482,8 @@ def main():
 
     scan_folder = run_capture(args)
     if scan_folder is None:
-        print("Scan did not complete; skipping reconstruction.")
-        return
+        print("Scan did not complete; skipping homing and reconstruction.")
+        sys.exit(1)       # non-zero: the dashboard marks the scan failed (no 'after' IR, no training export)
 
     home_after_scan(args)
     run_reconstruction(args, scan_folder)

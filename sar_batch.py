@@ -755,6 +755,7 @@ def main():
                 progress(status="scan_start", index=done + 1, total=args.count, name=name, attempt=attempt)
                 log(f"=== Scan {done + 1}/{args.count}: {name} (attempt {attempt}) ===")
                 error = None
+                gantry_stopped = None
                 snaps = {}
                 ir_info = None
                 missing, sizes = list(range(1, num_rows + 1)), {}
@@ -810,6 +811,10 @@ def main():
                     raise
                 except Exception as e:
                     error = f"{type(e).__name__}: {e}"
+                    if isinstance(e, getattr(sc, "GantryStopped", ())):
+                        # Emergency stop / gantry fault: record this scan as failed below, then end
+                        # the whole batch WITHOUT homing, retrying or any other movement.
+                        gantry_stopped = e
 
                 duration = round(time.time() - t0, 1)
                 record = {
@@ -882,6 +887,10 @@ def main():
                             json.dump(record, f, indent=2)
                     except OSError:
                         pass
+                if gantry_stopped is not None:
+                    raise sc.GantryStopped(
+                        f"{gantry_stopped} -- batch ended with no further movement. Release the "
+                        "emergency stop and check the gantry before starting again (it re-homes then).")
                 if args.skip_pi_ssh and scans_since_home is None:
                     raise RuntimeError("scan failed mid-way with --skip-pi-ssh; gantry position "
                                        "unknown. Home it and restart the batch.")

@@ -19,7 +19,7 @@
   "body_mask": false,
   "polarity": "both",
   "capture_seconds": 3.0,
-  "cm_per_px": 0.4347,
-  "calibrated_at": "2026-11-12 16:40:49",
-  "calibration_note": "24 cm2 plate = 127 px"
+  "cm_per_px": 0.5314,
+  "calibrated_at": "2026-11-13 17:01:37",
+  "calibration_note": "24 cm2 plate = 85 px"
 }

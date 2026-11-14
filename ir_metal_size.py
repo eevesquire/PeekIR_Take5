@@ -66,6 +66,8 @@ class Settings:
     min_delta_8bit: float = 8.0     # same, for 8-bit frames (when IR_RAW_Y16=0 on the Pi)
     noise_k: float = 6.0            # also require change > noise_k * estimated sensor noise
     min_area_px: int = 6            # blobs smaller than this are ignored (noise / too small to see)
+    min_area_cm2: float = 0.0       # when calibrated, also ignore pieces smaller than this many cm^2
+                                    # (stray specks); 0 = off. Uncalibrated: only min_area_px applies
     morph_px: int = 1               # clean-up radius (open, then close) when outline_fill="none"
     # Metal often shows only as a thin bright/dark RING (its edges) with a face that blends in.
     # "holes": join small gaps in the ring (close_px), then fill its inside so the whole piece
@@ -500,6 +502,8 @@ def detect(ref: np.ndarray, cur: np.ndarray, ir_format: str, s: Settings) -> tup
         area = int(stats[i, cv2.CC_STAT_AREA])
         if area < s.min_area_px:
             continue
+        if cpp and s.min_area_cm2 > 0 and area * cpp * cpp < s.min_area_cm2:
+            continue                                       # too small to matter (noise speck)
         x, y, w, h = (int(stats[i, j]) for j in (cv2.CC_STAT_LEFT, cv2.CC_STAT_TOP,
                                                  cv2.CC_STAT_WIDTH, cv2.CC_STAT_HEIGHT))
         sel = labels == i
@@ -1035,6 +1039,8 @@ def main():
     p.add_argument("--low", type=float, help="below this many cm^2 = LOW")
     p.add_argument("--high", type=float, help="at or above this many cm^2 = HIGH")
     p.add_argument("--min-area-px", type=int)
+    p.add_argument("--min-area-cm2", type=float,
+                   help="ignore pieces smaller than this many cm^2 (needs calibration; 0 = off)")
     p.add_argument("--min-delta-c", type=float)
     p.add_argument("--polarity", choices=["cold", "warm", "both"],
                    help="which temperature change counts as metal (default cold)")
@@ -1083,7 +1089,8 @@ def main():
         print(f"Image: {args.save}  (blue = colder than reference, red = warmer, black outline = detected)")
     elif args.cmd == "levels":
         sizer.update_settings(low_max_cm2=args.low, high_min_cm2=args.high,
-                              min_area_px=args.min_area_px, min_delta_c=args.min_delta_c,
+                              min_area_px=args.min_area_px, min_area_cm2=args.min_area_cm2,
+                              min_delta_c=args.min_delta_c,
                               polarity=args.polarity, outline_fill=args.fill, close_px=args.close_px,
                               capture_seconds=args.seconds, noise_k=args.noise_k,
                               min_delta_8bit=args.min_delta_8bit, bg_block_px=args.bg_block, smooth_px=args.smooth,
