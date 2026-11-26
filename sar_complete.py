@@ -15,6 +15,7 @@ Usage:
     python sar_complete.py -W 280 -H 40 --y-step 1 --snake
     python sar_complete.py --viz matplotlib         # fall back to the matplotlib window
     python sar_complete.py --viz gif --gif-fps 15   # render a GIF instead of HTML
+    python sar_complete.py -W 350 -H 400 --side-scans   # front scan + arm side passes (sar_sides.py)
 
 All coordinator flags (``-W``, ``-H``, ``-s``, ``--snake``, ``--num-frames``,
 ``--frame-periodicity``, ``--y-step``, ``-o`` …) keep their original meaning.
@@ -29,6 +30,7 @@ import sys
 from pathlib import Path
 
 import sar_coordinator as sc
+import sar_sides
 import socket
 
 _REPO_ROOT = Path(__file__).resolve().parent
@@ -144,6 +146,8 @@ def build_parser():
              f"{_REPO_ROOT / 'visualizations'}).",
     )
 
+    sar_sides.add_side_args(parser)
+
     ir = parser.add_argument_group("IR snapshot sync (dashboard)")
     ir.add_argument("--ir-sync-file", type=str, default=None, metavar="PATH",
                     help="After homing, print a 'ready_for_ir' progress line and wait until PATH exists "
@@ -247,6 +251,10 @@ def build_reconstruct_argv(args, scan_folder):
 
     if getattr(args, "viz_html_root", None):
         argv += ["--viz-html-root", str(args.viz_html_root)]
+
+    sh = getattr(args, "_scan_height_override", None)   # side passes: 1 row, but a 2 mm crop window
+    if sh is not None:
+        argv[argv.index("--scan-height") + 1] = str(sh)
 
     return argv
 
@@ -374,7 +382,15 @@ def run_capture(args):
         gantry, radar = sc.accept_clients(server)
         print()
         sc.run_scan(gantry, radar, args)
-        scan_ok = True
+        scan_ok = True                       # the front scan is complete from here on
+        if getattr(args, "side_scans", False):
+            try:
+                sar_sides.run_side_passes(gantry, radar, args, out_path)
+            except Exception as e:
+                # Keep (and reconstruct) the front scan and any finished sides; no further movement.
+                print(f"\nSide passes stopped: {e}")
+                args._gantry_stopped = isinstance(e, getattr(sc, "GantryStopped", ()))
+                _progress(phase="side", status="aborted", message=str(e))
     except KeyboardInterrupt:
         print("\n\nScan interrupted.")
     except getattr(sc, "GantryStopped", ()) as e:
@@ -485,8 +501,13 @@ def main():
         print("Scan did not complete; skipping homing and reconstruction.")
         sys.exit(1)       # non-zero: the dashboard marks the scan failed (no 'after' IR, no training export)
 
-    home_after_scan(args)
+    if getattr(args, "_gantry_stopped", False):
+        print("Gantry stopped during the side passes (e-stop?): no homing; reconstructing what was captured.")
+    else:
+        home_after_scan(args)
     run_reconstruction(args, scan_folder)
+    if getattr(args, "side_dirs", None):
+        sar_sides.reconstruct_sides(args, args.side_dirs, run_reconstruction)
 
 
 if __name__ == "__main__":

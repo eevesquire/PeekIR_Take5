@@ -12,16 +12,16 @@ one command on the laptop. Disable with PI_SSH_AUTO_START=0 if you start the Pi
 server yourself.
 
 Environment:
-  PI_BASE_URL       — Pi camera server base (default http://10.244.13.117:9000)
+  PI_BASE_URL       — Pi camera server base (default http://10.245.61.148:9000)
   PI_SSH_AUTO_START — 1 (default): SSH to Pi and run pi_camera_server.py; 0 to skip
   PEEKIR_POI_DB     — Path to POI embedding JSON (default facial_rec/demo_embedding.json)
   PEEKIR_FACE_COSINE_THRESHOLD — ArcFace match threshold (default 0.68, same as match_suspect.py)
   PEEKIR_FACE_WARMUP — 1 (default): background-load DeepFace models at startup so the first
     capture is not stuck on TensorFlow/ArcFace/RetinaFace load (POI vectors always come from JSON only).
   PI_SSH_HOST       — Pi hostname/IP for SSH (default: host from PI_BASE_URL)
-  PI_SSH_USER       — SSH user (default peekir)
-  PI_SSH_PROJECT_DIR — Project dir on Pi under $HOME (default PeekIR_Pi)
-  PI_SSH_VENV       — venv folder on Pi (default venv)
+  PI_SSH_USER       — SSH user (default takefive)
+  PI_SSH_PROJECT_DIR — Project dir on Pi under $HOME (default PeekIR_Final)
+  PI_SSH_VENV       — venv folder on Pi (default .venv)
   PEEKIR_DATA_ROOT  — Extra allowed root for loading Plotly HTML (optional)
   PEEKIR_DEBUG=1    — Extra logs (e.g. /api/config, traceback on snapshot httpx errors)
   PEEKIR_METAL_STATE — Folder for the IR metal-size reference/calibration (default ./ir_metal_state).
@@ -31,6 +31,15 @@ Environment:
   PEEKIR_SCAN_IR_SECONDS — length of each automatic IR capture (default 2)
   PEEKIR_TRAINING_DIR — training data folder for "Save IR training sample" (default ./training_data;
                       needs training_export.py next to this file)
+  PEEKIR_IR_AFTER_HOMING — 1 (default): take the "before" IR snapshot once the gantry is homed;
+                      0: take it as soon as Start scan is pressed
+  PEEKIR_HOME_AFTER_SCAN — 1 (default): home the gantry right after the capture (clear view for "after" IR)
+  PEEKIR_THREAT_ROOTS — extra scan folders for the threat panel (separated by os.pathsep)
+  PEEKIR_IR_DETECTOR — "ai" (default) or "yolo": model used by the Capture IR button
+  PEEKIR_HOST / PEEKIR_PORT — where the dashboard listens (default 127.0.0.1:8080)
+
+Arm side scans: tick "Arm side scans" on the page (passes --side-scans to sar_complete.py; needs
+sar_sides.py). The two side profiles and the panorama appear in the "Side views" panel.
 
 Debug:
   - Server logs SNAPSHOT/PROBE lines for Pi HTTP from this machine.
@@ -535,7 +544,7 @@ def index() -> str:
 # for the file; the dashboard takes the "before" IR snapshot, then creates the file. With
 # --home-after-scan the gantry is homed again right after the capture, so the "after" snapshot
 # (taken when sar_complete.py exits) is not blocked either.
-#   PEEKIR_IR_AFTER_HOMING=0  -> old behaviour: "before" snapshot as soon as Start scan is pressed
+#   PEEKIR_IR_AFTER_HOMING=0  -> "before" snapshot as soon as Start scan is pressed
 #   PEEKIR_HOME_AFTER_SCAN=0  -> leave the gantry where the scan ended
 def _env_on(name: str, default: str = "1") -> bool:
     return os.getenv(name, default).strip().lower() not in {"0", "false", "no", "off"}
@@ -567,6 +576,9 @@ def _ir_after_homing(scan_name: str) -> None:
 #   x_start_mm (-x), y_start_mm (-y), y_step_mm (--y-step), zstart_mm / zend_mm / zstep_mm (--zstart/--zend/--zstep)
 # Labels for the scan_meta.json + training export (same meaning as sar_batch.py):
 #   view, label, metal ("yes"/"no"/""), object, true_area_cm2, notes, training (true/false)
+# Arm side passes (sar_sides.py), all optional:
+#   side_scans (true/false) -> --side-scans; side_height_mm (--side-height), side_y_start_mm (--side-y-start),
+#   side_zstart_mm / side_zend_mm (--side-zstart / --side-zend)
 _scan_requests: dict[str, dict[str, Any]] = {}
 _SAFE_PART = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]*")
 
@@ -615,16 +627,33 @@ def _parse_scan_options(body: dict[str, Any]) -> tuple[list[str], dict[str, Any]
     weapon_type = str(body.get("weapon_type") or "").strip().lower()
     if weapon_type not in ("", "gun", "knife", "other", "none"):
         raise HTTPException(400, "weapon type must be gun, knife, other, none or empty")
+    side_on = body.get("side_scans", False) in (True, "true", "1", 1, "yes", "on")
+    sh = _opt_num(body, "side_height_mm", positive=True)
+    sy0 = _opt_num(body, "side_y_start_mm")
+    sz0 = _opt_num(body, "side_zstart_mm", positive=True)
+    sz1 = _opt_num(body, "side_zend_mm", positive=True)
+    if sy0 is not None and sy0 < 0:
+        raise HTTPException(400, "Side Y start must be 0 or more")
+    if sz0 is not None and sz1 is not None and sz1 <= sz0:
+        raise HTTPException(400, "Side Z end must be larger than side Z start")
     args: list[str] = ["-o", str(OUTPUTS_DIR)]
     for flag, val in (("-x", x0), ("-y", y0), ("--y-step", ys), ("--zstart", z0), ("--zend", z1), ("--zstep", zs)):
         if val is not None:
             args += [flag, _num_arg(val)]
+    if side_on:
+        args.append("--side-scans")
+        for flag, val in (("--side-height", sh), ("--side-y-start", sy0),
+                          ("--side-zstart", sz0), ("--side-zend", sz1)):
+            if val is not None:
+                args += [flag, _num_arg(val)]
     opts = {
         "x_start_mm": x0, "y_start_mm": y0, "y_step_mm": ys, "zstart_mm": z0, "zend_mm": z1, "zstep_mm": zs,
         "view": parts["view"], "label": parts["label"], "metal": metal,
         "object": str(body.get("object") or "").strip()[:80], "true_area_cm2": area, "weapon_type": weapon_type,
         "notes": str(body.get("notes") or "").strip()[:500],
         "training": body.get("training", True) not in (False, "false", "0", 0, "no"),
+        "side_scans": side_on, "side_height_mm": sh, "side_y_start_mm": sy0,
+        "side_zstart_mm": sz0, "side_zend_mm": sz1,
     }
     return args, opts
 
@@ -684,6 +713,7 @@ def _write_dashboard_scan_meta(scan_name: str, returncode: int | None) -> dict[s
                      "true_area_cm2": opts.get("true_area_cm2"),
                      "weapon_type": opts.get("weapon_type") or ("none" if metal is False else "")},
         "params": params, "reconstruction": recon,
+        "side_scans": _side_meta_record(scan_name, opts) if opts.get("side_scans") else None,
         "created_by": "peekir_dashboard.py (Start scan)",
     }
     (final / "scan_meta.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
@@ -705,6 +735,7 @@ def _after_dashboard_scan(scan_name: str, returncode: int | None) -> None:
     except Exception as e:
         _scan_log(f"scan_meta.json not written for {scan_name}: {e}")
     _broadcast_scan_threat(scan_name)
+    _broadcast_side_views(scan_name)
     if returncode != 0 or record is None or not opts.get("training", True):
         _scan_requests.pop(scan_name, None)
         return
@@ -1024,6 +1055,82 @@ async def threat_image(name: str, kind: str = "ir"):
         raise HTTPException(404, "no image")
     return Response(content=(d / fn).read_bytes(), media_type="image/png",
                     headers={"Cache-Control": "no-store"})
+
+
+# --------------------------------------------------------------------------- arm side views (sar_sides.py)
+# sar_complete.py --side-scans writes <scan>/<scan>_side_xmin|xmax/side_profile.png and <scan>/panorama.png.
+#   GET /api/scan/side-views?name=<scan>                  -> which pictures exist (+ side_meta.json)
+#   GET /api/scan/side-image?name=<scan>&kind=xmin|xmax|panorama
+_SIDE_IMAGE_KINDS = ("xmin", "xmax", "panorama")
+
+
+def _side_image_path(scan_dir: Path, kind: str) -> Path:
+    if kind == "panorama":
+        return scan_dir / "panorama.png"
+    return scan_dir / f"{scan_dir.name}_side_{kind}" / "side_profile.png"
+
+
+def _side_views_info(name: str) -> dict[str, Any]:
+    d = _threat_find(name)
+    if d is None:
+        return {"found": False, "name": name, "images": {}}
+    images, meta = {}, {}
+    if not _side_image_path(d, "panorama").is_file() and any(
+            (d / f"{d.name}_side_{s}" / "sar_volume.npz").exists() for s in ("xmin", "xmax")):
+        # Reconstructed but the pictures were never drawn (e.g. older run): draw them now.
+        with contextlib.suppress(Exception):
+            if str(REPO_ROOT) not in sys.path:
+                sys.path.insert(0, str(REPO_ROOT))
+            import sar_sides
+            sar_sides.make_panorama(d)
+    for kind in _SIDE_IMAGE_KINDS:
+        p = _side_image_path(d, kind)
+        if p.is_file():
+            images[kind] = {"url": f"/api/scan/side-image?name={d.name}&kind={kind}", "mtime": p.stat().st_mtime}
+        if kind != "panorama":
+            with contextlib.suppress(Exception):
+                meta[kind] = json.loads((d / f"{d.name}_side_{kind}" / "side_meta.json").read_text(encoding="utf-8"))
+    return {"found": True, "name": d.name, "images": images, "meta": meta}
+
+
+def _side_meta_record(scan_name: str, opts: dict[str, Any]) -> dict[str, Any]:
+    """Side-pass settings and which pictures were made, for scan_meta.json."""
+    info = {}
+    with contextlib.suppress(Exception):
+        info = _side_views_info(scan_name)
+    return {"requested": {k: opts.get(k) for k in ("side_height_mm", "side_y_start_mm",
+                                                   "side_zstart_mm", "side_zend_mm")},
+            "images": sorted((info.get("images") or {}).keys()),
+            "sides": info.get("meta") or {}}
+
+
+def _broadcast_side_views(scan_name: str) -> None:
+    """After a dashboard scan: tell open dashboards where the side pictures are (if any)."""
+    try:
+        s = _side_views_info(scan_name)
+    except Exception as e:
+        s = {"found": False, "name": scan_name, "images": {}, "error": str(e)}
+    if not s.get("images"):
+        return
+    s["phase"] = "side_views"
+    s["scan_name"] = scan_name
+    _broadcast_sse_line("__PEEKIR_PROGRESS__ " + json.dumps(s) + "\n")
+
+
+@app.get("/api/scan/side-views")
+async def scan_side_views(name: str):
+    return await asyncio.to_thread(_side_views_info, name)
+
+
+@app.get("/api/scan/side-image")
+async def scan_side_image(name: str, kind: str = "panorama"):
+    if kind not in _SIDE_IMAGE_KINDS:
+        raise HTTPException(400, "kind must be xmin, xmax or panorama")
+    d = await asyncio.to_thread(_threat_find, name)
+    p = None if d is None else _side_image_path(d, kind)
+    if p is None or not p.is_file():
+        raise HTTPException(404, "no side image")
+    return Response(content=p.read_bytes(), media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 def _viz_scan_name(doc_id: str) -> str | None:

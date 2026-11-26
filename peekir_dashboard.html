@@ -109,7 +109,7 @@
       overflow: hidden;
       background: #000;
     }
-    /* Legacy HTML without PEEKIR_VIZ_SIZE */
+    /* Plotly HTML without a PEEKIR_VIZ_SIZE size tag: fixed-height frame */
     .viz-frame-wrap:not(.viz-sized) .viz-frame-scale-inner {
       display: block;
       width: 100%;
@@ -413,6 +413,14 @@
                                                 border-radius: 4px; padding: 0.3rem 0.4rem; font-size: 0.8rem; }
     .train-fields input { width: 7rem; }
     .train-status { margin-top: 0.35rem; font-size: 0.74rem; color: var(--muted); }
+    .side-box { margin-top: 0.8rem; padding-top: 0.6rem; border-top: 1px solid var(--border); }
+    .side-imgs { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; margin-top: 0.5rem; }
+    .side-imgs.pano { grid-template-columns: 1fr; }
+    .side-imgs figure { margin: 0; border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem; min-width: 0; }
+    .side-imgs figcaption { font-size: 0.8rem; font-weight: 700; margin-bottom: 0.3rem; }
+    .side-imgs img { width: 100%; display: block; border-radius: 4px; background: #fff; }
+    .side-missing { font-size: 0.78rem; color: var(--muted); padding: 1rem 0.3rem; text-align: center; }
+    .scan-opts .side-dim { opacity: 0.45; }
     .metal-result img { width: 100%; max-height: 300px; object-fit: contain; display: block; background: #000;
                         border: 1px solid var(--border); border-radius: 6px; }
   </style>
@@ -447,6 +455,13 @@
         <div><label for="optYStep">Y step (mm)</label><input type="number" id="optYStep" min="0.1" step="0.1" placeholder="default"></div>
         <div><label for="optZ0">Z start (mm)</label><input type="number" id="optZ0" min="1" step="1" placeholder="200"></div>
         <div><label for="optZ1">Z end (mm)</label><input type="number" id="optZ1" min="1" step="1" placeholder="400"></div>
+      </div>
+      <div class="row scan-opts" aria-label="Arm side scans">
+        <div><label class="threat-opt" title="After the front scan: drive to each X end, rotate the panel toward the mannequin, extend the arm and do one vertical pass (needs the arm + servo powered)"><input type="checkbox" id="optSide"> Arm side scans</label></div>
+        <div class="side-field"><label for="optSideH">Side height (mm)</label><input type="number" id="optSideH" min="1" step="1" placeholder="300"></div>
+        <div class="side-field"><label for="optSideY0">Side Y start (mm)</label><input type="number" id="optSideY0" min="0" step="1" placeholder="0"></div>
+        <div class="side-field"><label for="optSideZ0">Side Z start (mm)</label><input type="number" id="optSideZ0" min="1" step="1" placeholder="50"></div>
+        <div class="side-field"><label for="optSideZ1">Side Z end (mm)</label><input type="number" id="optSideZ1" min="1" step="1" placeholder="300"></div>
       </div>
       <div class="row scan-opts" aria-label="Labels for training data">
         <div><label for="optView">View</label><input type="text" id="optView" list="optViewList" placeholder="front" maxlength="60"></div>
@@ -521,6 +536,14 @@
                 </div>
               </div>
             </div>
+          </div>
+          <div class="side-box" id="sideBox" aria-label="Arm side views" style="display:none">
+            <div class="threat-head">
+              <h4>Side views</h4>
+              <span id="sideName" class="threat-name"></span>
+              <label class="threat-opt" title="One picture: min-X side | front | max-X side"><input type="checkbox" id="sidePano"> Panorama</label>
+            </div>
+            <div id="sideImgs" class="side-imgs"></div>
           </div>
         </div>
       </div>
@@ -638,13 +661,28 @@
           if (p.status === 'start') setScanBar(100);
         } else if (p.phase === 'ir') {
           showScanIr(p);
+        } else if (p.phase === 'side') {
+          const nm = { xmax: 'max-X', xmin: 'min-X' }[p.side] || p.side || '';
+          const st = document.getElementById('scanStatus');
+          if (p.status === 'start') {
+            st.textContent = 'Side scan ' + p.index + ' / ' + p.total + ' (' + nm + ' end): moving arm…';
+            setScanBar(((p.index - 1) / p.total) * 100);
+          } else if (p.status === 'done') {
+            st.textContent = 'Side scan ' + p.index + ' / ' + p.total + ' (' + nm + ' end) done';
+            setScanBar((p.index / p.total) * 100);
+          } else if (p.status === 'views') {
+            st.textContent = 'Side views drawn';
+          } else if (p.status === 'aborted') {
+            st.textContent = 'Side scans stopped: ' + (p.message || 'error') + ' (front scan kept)';
+          }
         }
       }
     };
 
-    // ---- extra scan settings (same as sar_batch.py: -x -y --y-step --zstart --zend, view/label) ----
+    // ---- extra scan settings (same as sar_batch.py: -x -y --y-step --zstart --zend, view/label; plus arm side scans) ----
     const _SCAN_OPT_IDS = ['w', 'h', 'optX', 'optY', 'optYStep', 'optZ0', 'optZ1',
-                           'optView', 'optLabel', 'optMetal', 'optWeapon', 'optObject', 'optArea', 'optTraining'];
+                           'optView', 'optLabel', 'optMetal', 'optWeapon', 'optObject', 'optArea', 'optTraining',
+                           'optSide', 'optSideH', 'optSideY0', 'optSideZ0', 'optSideZ1'];
     const _SCAN_OPT_DEFAULTS = { optX: '50', optY: '0', optYStep: '2', optZ0: '300', optZ1: '450' };
     function scanOptions() {
       const v = (id) => document.getElementById(id).value.trim();
@@ -653,7 +691,10 @@
         zstart_mm: v('optZ0'), zend_mm: v('optZ1'),
         view: v('optView'), label: v('optLabel'), metal: v('optMetal'), weapon_type: v('optWeapon'),
         object: v('optObject'), true_area_cm2: v('optArea'),
-        training: document.getElementById('optTraining').checked
+        training: document.getElementById('optTraining').checked,
+        side_scans: document.getElementById('optSide').checked,
+        side_height_mm: v('optSideH'), side_y_start_mm: v('optSideY0'),
+        side_zstart_mm: v('optSideZ0'), side_zend_mm: v('optSideZ1')
       };
     }
     function saveScanOptions() {
@@ -675,6 +716,15 @@
       }
       for (const id of _SCAN_OPT_IDS) document.getElementById(id).addEventListener('change', saveScanOptions);
     })();
+    function updateSideFields() {
+      const on = document.getElementById('optSide').checked;
+      document.querySelectorAll('.side-field').forEach(el => {
+        el.classList.toggle('side-dim', !on);
+        el.querySelector('input').disabled = !on;
+      });
+    }
+    document.getElementById('optSide').addEventListener('change', updateSideFields);
+    updateSideFields();
 
     document.getElementById('btnScan').onclick = async () => {
       const w = parseFloat(document.getElementById('w').value);
@@ -1258,6 +1308,66 @@
     document.getElementById('threatOutlines').onchange = () => {
       if (_vizDocId) document.getElementById('vizFrame').src = _vizSrc(_vizDocId);
     };
+
+    // ---- Arm side views (sar_sides.py): two side profiles, or one panorama ----
+    let _sideInfo = null;
+    function renderSideViews() {
+      const box = document.getElementById('sideBox');
+      const host = document.getElementById('sideImgs');
+      const s = _sideInfo;
+      if (!s || !s.found || !s.images || !Object.keys(s.images).length) { box.style.display = 'none'; return; }
+      box.style.display = 'block';
+      document.getElementById('sideName').textContent = s.name;
+      const pano = document.getElementById('sidePano').checked && s.images.panorama;
+      host.className = 'side-imgs' + (pano ? ' pano' : '');
+      host.innerHTML = '';
+      const t = '&t=' + Date.now();
+      const add = (kind, title) => {
+        const fig = document.createElement('figure');
+        const cap = document.createElement('figcaption');
+        cap.textContent = title;
+        fig.appendChild(cap);
+        const im = s.images[kind];
+        if (im) {
+          const a = document.createElement('a');
+          a.href = im.url + t; a.target = '_blank'; a.rel = 'noopener';
+          const img = document.createElement('img');
+          img.src = im.url + t; img.alt = title;
+          a.appendChild(img); fig.appendChild(a);
+        } else {
+          const m = document.createElement('div');
+          m.className = 'side-missing'; m.textContent = 'No ' + title.toLowerCase() + ' for this scan';
+          fig.appendChild(m);
+        }
+        host.appendChild(fig);
+      };
+      if (pano) add('panorama', 'Panorama: min-X side | front | max-X side');
+      else { add('xmin', 'Min-X side'); add('xmax', 'Max-X side'); }
+    }
+    async function loadSideViews(name) {
+      if (!name) { _sideInfo = null; renderSideViews(); return; }
+      try {
+        const r = await fetch('/api/scan/side-views?name=' + encodeURIComponent(name));
+        _sideInfo = r.ok ? await r.json() : null;
+      } catch (e) { _sideInfo = null; console.error(e); }
+      renderSideViews();
+    }
+    document.getElementById('sidePano').onchange = renderSideViews;
+    // follow whichever scan the threat panel is showing
+    const _origShowThreat = showThreat;
+    showThreat = function (s) {
+      _origShowThreat(s);
+      if (s && s.found && s.name && (!_sideInfo || _sideInfo.name !== s.name)) loadSideViews(s.name);
+    };
+    es.addEventListener('message', (ev) => {
+      let d;
+      try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.progress && d.progress.phase === 'side_views' &&
+          (document.getElementById('threatAuto').checked || _sideInfo === null)) {
+        _sideInfo = d.progress;
+        renderSideViews();
+      }
+    });
 
     refreshMetalStatus();
 

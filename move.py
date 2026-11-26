@@ -12,6 +12,9 @@
 #   python3 move.py --step=50 up            # override global step
 #   python3 move.py left=200 --force        # ignore margin clamp, don't save position
 #   python3 move.py arcade                  # interactive keyboard control
+#   python3 move.py arm extend|retract|status   # arm (Z) - needs arm_control.py + 12 V
+#   python3 move.py rotate front|xmax|xmin  # panel rotation (arm must be retracted)
+#   python3 move.py park                    # retract arm + panel to front
 
 from gpiozero import DigitalOutputDevice, Button
 from rpi_hardware_pwm import HardwarePWM
@@ -93,6 +96,34 @@ def estop_is_pressed():
     except Exception:
         return False
 
+# ---------------------------------------------------------------------------
+# Arm (Z) + panel rotation - see arm_control.py. Loaded only when needed, so the X/Y gantry
+# still works if the arm hardware is unpowered or arm_control.py is missing.
+# ---------------------------------------------------------------------------
+_arm = None
+
+def get_arm():
+    global _arm
+    if _arm is None:
+        import arm_control
+        _arm = arm_control.ArmSystem(estop=estop_is_pressed)
+    return _arm
+
+def arm_saved_state():
+    """Arm/panel state saved on disk (no hardware access). 'unknown' if never used."""
+    try:
+        import arm_control
+        return arm_control.read_state()
+    except Exception:
+        return {"arm": "unknown", "pose": "unknown"}
+
+def _stop_arm_quiet():
+    if _arm is not None:
+        try:
+            _arm.stop()
+        except Exception:
+            pass
+
 def get_triggered_limits():
     triggered = []
     for name, sw in reed_switches.items():
@@ -120,6 +151,9 @@ Quick CLI usage examples:
   python3 move.py --step=50 up                 # override global step
   python3 move.py left=200 --force             # ignore margin clamp, don't save position
   python3 move.py arcade                       # enter arcade mode
+  python3 move.py arm extend|retract|status    # arm (Z), needs arm_control.py + 12 V
+  python3 move.py rotate front|xmax|xmin       # panel rotation (arm must be retracted)
+  python3 move.py park                         # retract the arm, panel to front
   python3 move.py --help                       # show this help and exit
 
 Main Commands:
@@ -131,6 +165,14 @@ Main Commands:
   go [amount] <dir>
                    Shorthand for moving a specified amount in a direction; defaults to right
   arcade           Enter interactive arcade mode (keyboard-controlled)
+  arm <extend|retract|status>
+                   Timed arm move into its hard stop, or show the saved arm/panel state
+  rotate <front|xmax|xmin>
+                   Turn the panel to a calibrated pose (refused unless the arm is retracted)
+  park             Retract the arm and turn the panel to front (origin does this first)
+  tcp host=<ip> port=<n>
+                   Scan client for sar_coordinator: MOVE, plus ARM EXTEND/RETRACT, ROTATE <pose>,
+                   PARK, XEND max|min and ARM STATUS for the side scans
 
 Options:
   --step=<mm>      Override default step size
@@ -142,6 +184,8 @@ Options:
 Notes:
   - Force moves do not update saved position or index unless CLI command explicitly writes one.
   - When using arcade mode, use WASD or arrow keys; space stops motors; q quits.
+  - In tcp mode, X moves (MOVE left/right, XEND) are refused while the arm is extended. Plain CLI
+    left/right moves are not checked: run 'move.py park' first.
 '''
     print(help_text)
     print(f"Gantry Config: {total_distance}mm travel, {steps_per_rev} steps/rev")
@@ -176,6 +220,7 @@ def _safe_stop_motors():
             pwm.stop()
         except Exception:
             pass
+    _stop_arm_quiet()
 
 def _stop_and_exit(signum, frame):
     _safe_stop_motors()
@@ -314,6 +359,7 @@ def stopY_Motor():
 def stopAllMotor():
     stopX_Motor()
     stopY_Motor()
+    _stop_arm_quiet()
 
 # Cleanup
 def close():
@@ -390,6 +436,10 @@ def _tcp_execute_move(sock, args_str):
     if speed_val is not None:
         set_speed(speed_val)
 
+    if any(d in directions for d in ("left", "right")) and arm_saved_state()["arm"] in ("extended", "moving"):
+        _tcp_send(sock, "ERROR arm is extended: retract it before moving X")
+        return
+
     dx = 0.0
     dy = 0.0
     for d, dist in directions.items():
@@ -439,6 +489,77 @@ def _tcp_execute_move(sock, args_str):
         return
     _tcp_send(sock, "MOVE_COMPLETE")
 
+def _tcp_arm_command(sock, what):
+    """ARM EXTEND | ARM RETRACT | ROTATE <pose> | PARK -> MOTOR_STARTED ... MOVE_COMPLETE (or ERROR)."""
+    if estop_is_pressed():
+        _tcp_send(sock, "ERROR EMERGENCY STOP is pressed")
+        return
+    try:
+        arm = get_arm()
+    except Exception as e:
+        _tcp_send(sock, f"ERROR arm hardware unavailable: {e}")
+        return
+    _tcp_send(sock, "MOTOR_STARTED")
+    try:
+        if what == "extend":
+            arm.extend()
+        elif what == "retract":
+            arm.retract()
+        elif what == "park":
+            arm.park()
+        else:
+            arm.rotate(what)
+    except Exception as e:
+        _tcp_send(sock, f"ERROR {e}")
+        return
+    _tcp_send(sock, "MOVE_COMPLETE")
+
+def drive_x_to_end(end, timeout_s=None):
+    """Drive X until the X_MAX / X_MIN reed switch triggers (on purpose, for the side scans).
+    Returns True if the switch was reached."""
+    want = "X_MAX" if end == "max" else "X_MIN"
+    if want in get_triggered_limits():
+        return True
+    if arm_saved_state()["arm"] in ("extended", "moving"):
+        raise RuntimeError("arm is extended: retract it before moving X")
+    (dirX.on if end == "max" else dirX.off)()
+    timeout_s = timeout_s or (AXIS_MAX_MM * 1.2 / speedX_mm_per_s)
+    pulX.start(duty_cycle)
+    t0 = time()
+    try:
+        while time() - t0 < timeout_s:
+            if want in get_triggered_limits():
+                return True
+            if estop_is_pressed():
+                return False
+            sleep(0.005)
+        return False
+    finally:
+        pulX.stop()
+
+def _tcp_xend(sock, args_str):
+    """XEND max|min [speed=NNmms] -> drive X to that end's reed switch."""
+    if estop_is_pressed():
+        _tcp_send(sock, "ERROR EMERGENCY STOP is pressed")
+        return
+    tokens = args_str.split()
+    end = tokens[0].lower() if tokens else ""
+    if end not in ("max", "min"):
+        _tcp_send(sock, "ERROR XEND needs max or min")
+        return
+    for t in tokens[1:]:
+        if t.startswith("speed="):
+            spd = parse_speed(t.split("=", 1)[1])
+            if spd is not None:
+                set_speed(spd)
+    _tcp_send(sock, "MOTOR_STARTED")
+    try:
+        ok = drive_x_to_end(end)
+    except Exception as e:
+        _tcp_send(sock, f"ERROR {e}")
+        return
+    _tcp_send(sock, "MOVE_COMPLETE" if ok else f"ERROR X_{end.upper()} switch not reached")
+
 _tcp_sock = None   # set in tcp_client_mode so the e-stop monitor can tell the coordinator
 
 def tcp_client_mode(host, port):
@@ -469,6 +590,17 @@ def tcp_client_mode(host, port):
                 break
             elif cmd.startswith("MOVE "):
                 _tcp_execute_move(s, cmd[5:])
+            elif cmd in ("ARM EXTEND", "ARM RETRACT"):
+                _tcp_arm_command(s, cmd.split()[1].lower())
+            elif cmd.startswith("ROTATE "):
+                _tcp_arm_command(s, cmd.split(None, 1)[1].strip().lower())
+            elif cmd == "PARK":
+                _tcp_arm_command(s, "park")
+            elif cmd.startswith("XEND "):
+                _tcp_xend(s, cmd[5:])
+            elif cmd == "ARM STATUS":
+                st = arm_saved_state()
+                _tcp_send(s, f"ARM_STATE arm={st['arm']} pose={st['pose']}")
             elif cmd.startswith("SPEED "):
                 spd = parse_speed(cmd[6:].strip())
                 if spd is not None:
@@ -874,16 +1006,7 @@ def arcade_mode_live(initialX, initialY, chosen_margin=MARGIN_MM, force_flag=Fal
             # 3. Update Motors
             start_motion_xy(active_x, active_y)
             
-            # 4. Update Position (Dead reckoning)
-            # We assume the loop runs fast enough that 'dt' is small.
-            # Ideally we'd measure dt from last loop, but for simplicity we can just
-            # accumulate based on active state over the loop duration?
-            # Better: track time since last update.
-            
-            # Actually, let's just update position based on elapsed time since last loop iteration.
-            # But we need a 'last_loop_time'.
-            
-            # Let's initialize last_loop_time before loop
+            # 4. Update Position (dead reckoning from the time since the last loop iteration)
             if 'last_loop_time' not in locals():
                 last_loop_time = now
             
@@ -1163,10 +1286,49 @@ def main_logic():
         stopAllMotor()
         return
 
+    # Arm / rotation commands (need arm_control.py next to this file, and the 12 V supply)
+    if len(sys.argv) >= 2 and sys.argv[1] in ("arm", "rotate", "park"):
+        cmd = sys.argv[1]
+        sub = sys.argv[2].lower() if len(sys.argv) > 2 else ""
+        if cmd == "arm" and sub == "status":
+            print(f"Arm state: {arm_saved_state()}")
+            return
+        try:
+            arm = get_arm()
+            if cmd == "arm" and sub in ("extend", "retract"):
+                (arm.extend if sub == "extend" else arm.retract)()
+            elif cmd == "rotate" and sub:
+                arm.rotate(sub)
+            elif cmd == "park":
+                arm.park()
+            else:
+                print("Usage: move.py arm extend|retract|status   move.py rotate front|xmax|xmin   move.py park")
+                return
+            print(f"OK. Arm state: {arm_saved_state()}")
+        except Exception as e:
+            print(f"Arm/rotation error: {e}")
+            sys.exit(3)
+        finally:
+            if _arm is not None:
+                _arm.close()
+        return
+
     # Check for origin command -- homes to bottom-left (0, 0) via limit switches
     origin_flag = any(arg.lstrip('-') == 'origin' for arg in sys.argv)
 
     if origin_flag:
+        # Homing moves X: make sure the arm is retracted and the panel faces front first.
+        st = arm_saved_state()
+        if st["arm"] != "retracted" or st["pose"] != "front":
+            try:
+                print(f"Parking arm before homing (was arm={st['arm']}, pose={st['pose']})...")
+                get_arm().park()
+            except Exception as e:
+                if st["arm"] in ("extended", "moving"):
+                    print(f"Could not retract the arm ({e}); NOT homing, since X could hit the mannequin.")
+                    sys.exit(3)
+                print(f"Warning: could not park the arm ({e}); assuming it is retracted and homing anyway.")
+
         print("Homing to origin (0, 0) -- driving left and down until limit switches...")
 
         dirX.off()  # Left

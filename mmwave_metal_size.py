@@ -5,9 +5,11 @@ No calibration needed: the reconstruction grid is already in millimetres, so a p
 cm^2 comes straight from how many image points it covers. Threat levels use the same cutoffs as
 the IR side (read from ir_metal_state/settings.json), so the two can be compared directly.
 
-Input: <scan folder>/sar_volume.npz, written by `sar_reconstruct.py ... --save-npz`
-(sar_batch.py now adds --save-npz automatically). For older scans without it, the `reconstruct`
-command re-runs sar_reconstruct.py with the settings stored in the scan's scan_meta.json.
+Input: <scan folder>/sar_volume.npz, written by `sar_reconstruct.py ... --save-npz` (sar_complete.py
+and sar_batch.py pass it by default). For scans without it, the `reconstruct` command re-runs
+sar_reconstruct.py with the settings stored in the scan's scan_meta.json.
+Arm side-pass folders (<scan>/<scan>_side_*, see sar_sides.py) are skipped: they are single vertical
+passes, not X-Y images.
 
 How a scan is measured (all on the X-Y max-brightness image, mip_xy):
   1. optional depth gate: ignore returns whose brightest depth is outside a range (table, wall...)
@@ -327,6 +329,12 @@ def outlines_mm(mask: np.ndarray, x_mm: np.ndarray, y_mm: np.ndarray) -> list[li
 
 # --------------------------------------------------------------------------- per-scan threat summary (dashboard)
 
+def is_side_folder(d: str | Path) -> bool:
+    """Arm side passes (sar_sides.py) live in <scan>/<scan>_side_xmax|xmin with a side_meta.json.
+    They are one vertical pass, not an X-Y image, so they are not measured as separate scans."""
+    return (Path(d) / "side_meta.json").exists()
+
+
 def find_scan_dir(root: str | Path, name: str) -> Path | None:
     """Scan folder called `name` under root (also tries without a trailing _N, as viewer HTMLs get one)."""
     root = Path(root)
@@ -349,7 +357,8 @@ def list_scans(root: str | Path, limit: int = 200) -> list[dict]:
     if not root.exists():
         return []
     dirs = {p.parent for pat in ("ir_start.json", "ir_start.npz", "mmwave_result.json", "sar_volume.npz")
-            for p in root.rglob(pat) if "_failed" not in p.parts and ".ir_pending" not in p.parts}
+            for p in root.rglob(pat) if "_failed" not in p.parts and ".ir_pending" not in p.parts
+            and not is_side_folder(p.parent)}
     out = [{"name": d.name, "folder": str(d.relative_to(root)), "mtime": d.stat().st_mtime} for d in dirs]
     out.sort(key=lambda r: r["mtime"], reverse=True)
     return out[:limit]
@@ -594,7 +603,7 @@ def combine(ir_level: str | None, mm_level: str | None) -> tuple[str, str]:
 def report(root: Path, csv_path: Path | None = None) -> list[dict]:
     root = Path(root)
     dirs = sorted({p.parent for pat in ("scan_meta.json", "ir_start.npz", "sar_volume.npz", "mmwave_result.json")
-                   for p in root.rglob(pat) if "_failed" not in p.parts})
+                   for p in root.rglob(pat) if "_failed" not in p.parts and not is_side_folder(p.parent)})
     rows = []
     for d in dirs:
         meta = {}
@@ -643,7 +652,8 @@ def _print_result(name: str, r: MmResult) -> None:
 
 
 def _folders_with(root: Path, name: str) -> list[Path]:
-    return sorted({p.parent for p in Path(root).rglob(name) if "_failed" not in p.parts})
+    return sorted({p.parent for p in Path(root).rglob(name)
+                   if "_failed" not in p.parts and not is_side_folder(p.parent)})
 
 
 def main() -> None:
